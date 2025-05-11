@@ -1,4 +1,4 @@
-openai==0.28.1
+openai>=1.12.0
 # transformers==4.33.0
 func_timeout
 sqlparse
@@ -8,3 +8,4 @@ tiktoken
 tqdm
 nltk
 flask
+google-genai>=0.0.1
