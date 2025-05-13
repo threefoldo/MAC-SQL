@@ -31,7 +31,7 @@ class SchemaManager:
             dataset_name: Name of the dataset (e.g., 'bird', 'spider')
             lazy: Whether to load database info lazily
         """
-        self.data_path = data_path.strip('/').strip('\\')
+        self.data_path = data_path
         self.tables_json_path = tables_json_path
         self.dataset_name = dataset_name
         

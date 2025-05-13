@@ -306,11 +306,11 @@ def parse_json(text: str) -> dict:
     # 查找字符串中的 JSON 块
     start = text.find("```json")
     end = text.find("```", start + 7)
-    
+
     # 如果找到了 JSON 块
     if start != -1 and end != -1:
         json_string = text[start + 7: end]
-        
+
         try:
             # 解析 JSON 字符串
             json_data = json.loads(json_string)
@@ -323,8 +323,68 @@ def parse_json(text: str) -> dict:
             print(f"error: parse json error!\n")
             print(f"json_string: {json_string}\n\n")
             pass
-    
+
     return {}
+
+
+def parse_xml(text: str) -> dict:
+    """
+    Parse XML string containing schema selection information into a Python dictionary.
+    Uses regex to extract table and column information, making it more resilient to malformed XML.
+
+    Expected format:
+    <schema_selection>
+      <table name="table1" selection="keep_all" />
+      <table name="table2" selection="drop_all" />
+      <table name="table3">
+        <column>col1</column>
+        <column>col2</column>
+      </table>
+    </schema_selection>
+    """
+    import re
+
+    result = {}
+
+    # Find all table elements with flexible regex patterns
+    table_patterns = [
+        # Pattern for self-closing tables with keep_all or drop_all
+        r'<table\s+name\s*=\s*["\'](.*?)["\']\s+selection\s*=\s*["\'](keep_all|drop_all)["\'].*?/>',
+        # Pattern for tables with name and selection attributes (non-self-closing)
+        r'<table\s+name\s*=\s*["\'](.*?)["\']\s+selection\s*=\s*["\'](keep_all|drop_all)["\'].*?>.*?</table>',
+        # Pattern for tables with only name attribute
+        r'<table\s+name\s*=\s*["\'](.*?)["\'].*?>(.*?)</table>'
+    ]
+
+    for pattern in table_patterns:
+        for match in re.finditer(pattern, text, re.DOTALL):
+            if pattern.endswith(r'/>') or pattern.endswith(r'["\'].*?>.*?</table>'):
+                # For tables with keep_all or drop_all
+                table_name = match.group(1)
+                selection = match.group(2)
+                result[table_name] = selection
+            else:
+                # For tables with column lists
+                table_name = match.group(1)
+                table_content = match.group(2)
+
+                # Find columns within this table
+                columns = []
+                column_matches = re.finditer(r'<column>(.*?)</column>', table_content, re.DOTALL)
+                for col_match in column_matches:
+                    col_name = col_match.group(1).strip()
+                    if col_name:
+                        columns.append(col_name)
+
+                if columns:
+                    result[table_name] = columns
+
+    # Verify the result contains valid data
+    for k, v in result.items():
+        if isinstance(v, str) and v not in ['keep_all', 'drop_all']:
+            print(f"Warning: invalid table selection value: {v} for table {k}")
+
+    return result
 
 
 def parse_sql(res: str) -> str:
