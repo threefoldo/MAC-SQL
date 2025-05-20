@@ -36,8 +36,16 @@ class SQLExecutor:
         Returns:
             Dictionary with execution results or error information
         """
-        # Get database connection
-        db_path = f"{self.data_path}/{db_id}/{db_id}.sqlite"
+        # Get database connection with proper path based on dataset
+        if self.dataset_name == "bird":
+            db_path = f"{self.data_path}/dev_databases/{db_id}/{db_id}.sqlite"
+        elif self.dataset_name == "spider":
+            db_path = f"{self.data_path}/database/{db_id}/{db_id}.sqlite"
+        else:
+            db_path = f"{self.data_path}/{db_id}/{db_id}.sqlite"
+            
+        print(f"[SQLExecutor] Connecting to database: {db_path}")
+        
         conn = sqlite3.connect(db_path)
         conn.text_factory = lambda b: b.decode(errors="ignore")
         cursor = conn.cursor()
@@ -120,6 +128,8 @@ class SQLExecutor:
         try:
             result = self.execute_sql(sql, db_id)
             result['timeout'] = False
+            result['is_valid_result'] = True  # Add this for consistent response format
+            result['validation_message'] = ""
             return result
         except FunctionTimedOut:
             return {
@@ -127,7 +137,9 @@ class SQLExecutor:
                 "sqlite_error": "Execution timed out (>120 seconds)",
                 "exception_class": "FunctionTimedOut", 
                 "timeout": True,
-                "success": False
+                "success": False,
+                "is_valid_result": False,
+                "validation_message": "Query execution timed out"
             }
         except Exception as e:
             return {
@@ -135,5 +147,7 @@ class SQLExecutor:
                 "sqlite_error": f"Unexpected error: {str(e)}",
                 "exception_class": str(type(e).__name__),
                 "timeout": False,
-                "success": False
+                "success": False,
+                "is_valid_result": False,
+                "validation_message": f"Unexpected error: {str(e)}"
             }

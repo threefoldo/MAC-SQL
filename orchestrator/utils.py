@@ -6,7 +6,7 @@ import json
 import time
 import sqlite3
 from const import subq_pattern
-from typing import Dict, List
+from typing import Dict, List, Any
 
 
 def is_valid_date(date_str):
@@ -170,44 +170,97 @@ def get_gold_columns(idx, db_path) -> dict:
     return sch
 
 
-# GPT result parsing
+def parse_json(text: str) -> Dict[str, Any]:
+    """
+    Attempt to parse JSON from text, returning an empty dict if parsing fails.
+    
+    Args:
+        text: Text that might contain JSON
+        
+    Returns:
+        Dictionary of parsed JSON or empty dict if parsing fails
+    """
+    try:
+        if not text or not isinstance(text, str):
+            return {}
+            
+        # Try direct JSON loading first
+        try:
+            if text.strip().startswith('{') and text.strip().endswith('}'):
+                return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+            
+        # Find JSON-like patterns with regex
+        json_pattern = r'{.*}'
+        match = re.search(json_pattern, text, re.DOTALL)
+        if match:
+            json_str = match.group()
+            return json.loads(json_str)
+            
+        # Try finding JSON in code blocks
+        code_block_pattern = r'```(?:json)?\s*(.*?)\s*```'
+        blocks = re.findall(code_block_pattern, text, re.DOTALL)
+        for block in blocks:
+            if block.strip().startswith('{') and block.strip().endswith('}'):
+                try:
+                    return json.loads(block)
+                except:
+                    continue
+                    
+        return {}
+    except Exception as e:
+        print(f"Error parsing JSON: {str(e)}")
+        return {}
 
 
-# def parse_json(res: str) -> dict:
-#     lines = res.split('\n')
-#     start_idx, end_idx = -1, -1
-#     for idx in range(0, len(lines)):
-#         if '```json' in lines[idx]:
-#             start_idx = idx
-#             break
-#     if start_idx == -1: return {}
-#     for idx in range(start_idx + 1, len(lines)):
-#         if '```' in lines[idx]:
-#             end_idx = idx
-#             break
-#     if end_idx == -1: return {}
-#     jstr = " ".join(lines[start_idx + 1: end_idx])
-#     return json.loads(jstr)
-
-
-# parse json output
-def parse_json(res: str) -> dict:
-    # lines = res.split('\n')
-    # start_idx, end_idx = -1, -1
-    # for idx in range(0, len(lines)):
-    #     if '```json' in lines[idx]:
-    #         start_idx = idx
-    #         break
-    # if start_idx == -1: return {}
-    # for idx in range(start_idx + 1, len(lines)):
-    #     if '```' in lines[idx]:
-    #         end_idx = idx
-    #         break
-    # if end_idx == -1: return {}
-    # jstr = " ".join(lines[start_idx + 1: end_idx])
-    # return json.loads(jstr)
-    # todo: for debug
-    return {}
+def extract_sql_from_text(text: str) -> str:
+    """
+    Extract SQL query from text.
+    
+    Args:
+        text: Text that might contain SQL
+        
+    Returns:
+        Extracted SQL query or empty string if no SQL found
+    """
+    try:
+        # Try to extract SQL from JSON
+        data = parse_json(text)
+        if 'sql' in data:
+            return data['sql']
+        if 'final_sql' in data:
+            return data['final_sql']
+            
+        # Try to extract SQL with regex patterns
+        sql_patterns = [
+            r'```sql\s*(.*?)\s*```',  # SQL in code blocks
+            r'```\s*SELECT.*?```',    # SELECT in generic code blocks
+            r'SELECT.*?(?:;|$)',      # Simple SELECT statements
+            r'WITH.*?(?:;|$)',        # WITH queries
+        ]
+        
+        for pattern in sql_patterns:
+            matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
+            if matches:
+                # Clean up the matched SQL
+                sql = matches[0].strip()
+                # Remove any trailing backticks or spaces
+                if sql.endswith('```'):
+                    sql = sql[:sql.rfind('```')].strip()
+                return sql
+        
+        # If no clear SQL pattern, look for any content between backticks
+        code_block_pattern = r'```(.*?)```'
+        code_blocks = re.findall(code_block_pattern, text, re.DOTALL)
+        for block in code_blocks:
+            if 'SELECT' in block.upper() or 'WITH' in block.upper():
+                return block.strip()
+                
+        return ""
+    except Exception as e:
+        print(f"Error extracting SQL: {str(e)}")
+        return ""
 
 
 # check if valid format
@@ -300,31 +353,6 @@ def save_jsonl_file(path, data):
         for js in data:
             f.write(json.dumps(js, ensure_ascii=False) + '\n')
         print(f"save jsonl file to {path}")
-
-
-def parse_json(text: str) -> dict:
-    # 查找字符串中的 JSON 块
-    start = text.find("```json")
-    end = text.find("```", start + 7)
-
-    # 如果找到了 JSON 块
-    if start != -1 and end != -1:
-        json_string = text[start + 7: end]
-
-        try:
-            # 解析 JSON 字符串
-            json_data = json.loads(json_string)
-            valid = check_selector_response(json_data)
-            if valid:
-                return json_data
-            else:
-                return {}
-        except:
-            print(f"error: parse json error!\n")
-            print(f"json_string: {json_string}\n\n")
-            pass
-
-    return {}
 
 
 def parse_xml(text: str) -> dict:
