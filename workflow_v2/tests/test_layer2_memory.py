@@ -7,6 +7,12 @@ import pytest
 from datetime import datetime
 from typing import Dict, Any, List
 
+
+# Import setup for tests
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from memory import KeyValueMemory
 from autogen_core.memory import MemoryContent, MemoryMimeType
 
@@ -149,7 +155,12 @@ class TestKeyValueMemory:
         # Query by key
         result = await memory.query("user_1")
         assert len(result.results) == 1
-        assert result.results[0].content["name"] == "Alice"
+        content = result.results[0].content
+        # Content might be JSON string, so parse if needed
+        if isinstance(content, str):
+            import json
+            content = json.loads(content)
+        assert content["name"] == "Alice"
         
         # Query with MemoryContent (metadata match)
         query_content = MemoryContent(

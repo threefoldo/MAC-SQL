@@ -7,6 +7,12 @@ import pytest
 from datetime import datetime
 from typing import Dict, Any, List
 
+
+# Import setup for tests
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from memory import KeyValueMemory
 from task_context_manager import TaskContextManager
 from database_schema_manager import DatabaseSchemaManager
@@ -676,7 +682,7 @@ class TestNodeHistoryManager:
         
         # Get summary
         summary = await manager.get_history_summary()
-        assert summary["total_operations"] == 8
+        assert summary["total_operations"] == 9  # 3 create + 3 sql + 2 execute + 1 delete = 9
         assert summary["unique_nodes"] == 3
         assert summary["operation_counts"][NodeOperationType.CREATE.value] == 3
         assert summary["operation_counts"][NodeOperationType.GENERATE_SQL.value] == 3

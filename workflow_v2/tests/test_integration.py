@@ -7,6 +7,12 @@ import logging
 from datetime import datetime
 from typing import Dict, Any, List
 
+
+# Import setup for tests
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from memory import KeyValueMemory
 from task_context_manager import TaskContextManager
 from database_schema_manager import DatabaseSchemaManager

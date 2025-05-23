@@ -1,0 +1,347 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<workflow>
+  <!-- Workflow metadata -->
+  <metadata>
+    <workflow_id>wf_001</workflow_id>
+    <timestamp>2024-01-15T10:00:00Z</timestamp>
+    <dataset>bird</dataset>
+    <database>california_schools</database>
+  </metadata>
+  
+  <!-- Step 1: User Query -->
+  <step id="1" type="user_query">
+    <timestamp>2024-01-15T10:00:01Z</timestamp>
+    <query>List the top 5 school districts with the highest average SAT math scores, but only consider districts where at least 60% of schools are charter schools and have more than 100 test takers.</query>
+    <evidence>Charter schools refers to `Charter School (Y/N)` = 1 in the frpm table; SAT math scores are in AvgScrMath column; test takers count is NumTstTakr</evidence>
+  </step>
+  
+  <!-- Step 2: Schema Selection -->
+  <step id="2" type="schema_selection">
+    <timestamp>2024-01-15T10:00:02Z</timestamp>
+    <agent>SchemaSelector</agent>
+    <input>
+      <database>california_schools</database>
+      <query>List the top 5 school districts with the highest average SAT math scores...</query>
+    </input>
+    <output>
+      <selected_tables>
+        <table name="frpm">
+          <reason>Contains charter school information and district names</reason>
+          <columns>
+            <column name="CDSCode" selected="true" reason="Primary key for joining"/>
+            <column name="District Name" selected="true" reason="Need district names for output"/>
+            <column name="Charter School (Y/N)" selected="true" reason="Filter charter schools"/>
+            <column name="School Name" selected="true" reason="Count schools per district"/>
+          </columns>
+        </table>
+        <table name="satscores">
+          <reason>Contains SAT math scores and test taker counts</reason>
+          <columns>
+            <column name="cds" selected="true" reason="Foreign key for joining"/>
+            <column name="AvgScrMath" selected="true" reason="Average math scores needed"/>
+            <column name="NumTstTakr" selected="true" reason="Filter by test taker count"/>
+            <column name="sname" selected="false" reason="School name already in frpm"/>
+          </columns>
+        </table>
+        <table name="schools">
+          <reason>Not needed - district info available in frpm</reason>
+          <selected>false</selected>
+        </table>
+      </selected_tables>
+      <foreign_keys>
+        <fk from="frpm.CDSCode" to="satscores.cds"/>
+      </foreign_keys>
+    </output>
+  </step>
+  
+  <!-- Step 3: Query Decomposition -->
+  <step id="3" type="query_decomposition">
+    <timestamp>2024-01-15T10:00:03Z</timestamp>
+    <agent>QueryAnalyzer</agent>
+    <input>
+      <original_query>List the top 5 school districts with the highest average SAT math scores...</original_query>
+      <schema>Selected tables from step 2</schema>
+    </input>
+    <output>
+      <decomposition>
+        <main_intent>Find top 5 districts by average SAT math scores with charter school and test taker constraints</main_intent>
+        <sub_questions>
+          <sub_question id="sq1">
+            <question>For each district, calculate the percentage of charter schools</question>
+            <purpose>Create a CTE to identify districts where at least 60% are charter schools</purpose>
+            <dependencies>none</dependencies>
+          </sub_question>
+          <sub_question id="sq2">
+            <question>Filter schools with more than 100 test takers and join with charter school data</question>
+            <purpose>Apply test taker constraint and prepare for aggregation</purpose>
+            <dependencies>sq1</dependencies>
+          </sub_question>
+          <sub_question id="sq3">
+            <question>Calculate average SAT math scores by district for qualifying schools</question>
+            <purpose>Aggregate scores at district level</purpose>
+            <dependencies>sq1,sq2</dependencies>
+          </sub_question>
+          <sub_question id="sq4">
+            <question>Select top 5 districts ordered by average math score</question>
+            <purpose>Apply final ordering and limit</purpose>
+            <dependencies>sq3</dependencies>
+          </sub_question>
+        </sub_questions>
+      </decomposition>
+    </output>
+  </step>
+  
+  <!-- Step 4: SQL Generation for Sub-questions -->
+  <step id="4" type="sql_generation">
+    <timestamp>2024-01-15T10:00:04Z</timestamp>
+    <agent>SQLGenerator</agent>
+    
+    <!-- Sub-question 1 SQL -->
+    <sub_step id="4.1" sub_question_id="sq1">
+      <input>
+        <question>For each district, calculate the percentage of charter schools</question>
+        <schema>frpm table with charter school information</schema>
+      </input>
+      <output>
+        <sql><![CDATA[
+WITH district_charter_pct AS (
+    SELECT 
+        `District Name`,
+        COUNT(*) as total_schools,
+        SUM(CASE WHEN `Charter School (Y/N)` = 1 THEN 1 ELSE 0 END) as charter_schools,
+        CAST(SUM(CASE WHEN `Charter School (Y/N)` = 1 THEN 1 ELSE 0 END) AS REAL) / COUNT(*) as charter_percentage
+    FROM frpm
+    GROUP BY `District Name`
+    HAVING charter_percentage >= 0.6
+)
+        ]]></sql>
+        <mapping>
+          <tables>
+            <table name="frpm" alias="frpm" purpose="Get charter school counts by district"/>
+          </tables>
+          <columns>
+            <column table="frpm" name="District Name" usage="groupBy,select"/>
+            <column table="frpm" name="Charter School (Y/N)" usage="filter,aggregate"/>
+          </columns>
+        </mapping>
+      </output>
+    </sub_step>
+    
+    <!-- Sub-question 2 SQL -->
+    <sub_step id="4.2" sub_question_id="sq2">
+      <input>
+        <question>Filter schools with more than 100 test takers and join with charter school data</question>
+        <dependencies>district_charter_pct CTE from sq1</dependencies>
+      </input>
+      <output>
+        <sql><![CDATA[
+, eligible_schools AS (
+    SELECT 
+        f.`District Name`,
+        f.`CDSCode`,
+        s.`AvgScrMath`,
+        s.`NumTstTakr`
+    FROM frpm f
+    INNER JOIN satscores s ON f.`CDSCode` = s.`cds`
+    INNER JOIN district_charter_pct dcp ON f.`District Name` = dcp.`District Name`
+    WHERE s.`NumTstTakr` > 100
+    AND s.`AvgScrMath` IS NOT NULL
+)
+        ]]></sql>
+        <mapping>
+          <tables>
+            <table name="frpm" alias="f" purpose="Link schools to districts"/>
+            <table name="satscores" alias="s" purpose="Get SAT scores and test taker counts"/>
+            <table name="district_charter_pct" alias="dcp" purpose="Filter qualifying districts"/>
+          </tables>
+          <columns>
+            <column table="frpm" name="District Name" usage="join,select"/>
+            <column table="frpm" name="CDSCode" usage="join"/>
+            <column table="satscores" name="cds" usage="join"/>
+            <column table="satscores" name="AvgScrMath" usage="select,filter"/>
+            <column table="satscores" name="NumTstTakr" usage="filter"/>
+          </columns>
+          <joins>
+            <join from="frpm" to="satscores" on="f.`CDSCode` = s.`cds`" type="INNER"/>
+            <join from="frpm" to="district_charter_pct" on="f.`District Name` = dcp.`District Name`" type="INNER"/>
+          </joins>
+        </mapping>
+      </output>
+    </sub_step>
+    
+    <!-- Sub-question 3 SQL -->
+    <sub_step id="4.3" sub_question_id="sq3">
+      <input>
+        <question>Calculate average SAT math scores by district for qualifying schools</question>
+        <dependencies>eligible_schools CTE from sq2</dependencies>
+      </input>
+      <output>
+        <sql><![CDATA[
+, district_avg_scores AS (
+    SELECT 
+        `District Name`,
+        AVG(`AvgScrMath`) as avg_district_math_score,
+        COUNT(*) as school_count,
+        SUM(`NumTstTakr`) as total_test_takers
+    FROM eligible_schools
+    GROUP BY `District Name`
+)
+        ]]></sql>
+        <mapping>
+          <tables>
+            <table name="eligible_schools" alias="eligible_schools" purpose="Aggregate eligible schools by district"/>
+          </tables>
+          <columns>
+            <column table="eligible_schools" name="District Name" usage="groupBy,select"/>
+            <column table="eligible_schools" name="AvgScrMath" usage="aggregate"/>
+            <column table="eligible_schools" name="NumTstTakr" usage="aggregate"/>
+          </columns>
+        </mapping>
+      </output>
+    </sub_step>
+    
+    <!-- Final SQL combining all CTEs -->
+    <sub_step id="4.4" sub_question_id="sq4">
+      <input>
+        <question>Select top 5 districts ordered by average math score</question>
+        <dependencies>All previous CTEs</dependencies>
+      </input>
+      <output>
+        <sql><![CDATA[
+WITH district_charter_pct AS (
+    SELECT 
+        `District Name`,
+        COUNT(*) as total_schools,
+        SUM(CASE WHEN `Charter School (Y/N)` = 1 THEN 1 ELSE 0 END) as charter_schools,
+        CAST(SUM(CASE WHEN `Charter School (Y/N)` = 1 THEN 1 ELSE 0 END) AS REAL) / COUNT(*) as charter_percentage
+    FROM frpm
+    GROUP BY `District Name`
+    HAVING charter_percentage >= 0.6
+),
+eligible_schools AS (
+    SELECT 
+        f.`District Name`,
+        f.`CDSCode`,
+        s.`AvgScrMath`,
+        s.`NumTstTakr`
+    FROM frpm f
+    INNER JOIN satscores s ON f.`CDSCode` = s.`cds`
+    INNER JOIN district_charter_pct dcp ON f.`District Name` = dcp.`District Name`
+    WHERE s.`NumTstTakr` > 100
+    AND s.`AvgScrMath` IS NOT NULL
+),
+district_avg_scores AS (
+    SELECT 
+        `District Name`,
+        AVG(`AvgScrMath`) as avg_district_math_score,
+        COUNT(*) as school_count,
+        SUM(`NumTstTakr`) as total_test_takers
+    FROM eligible_schools
+    GROUP BY `District Name`
+)
+SELECT 
+    `District Name`,
+    ROUND(avg_district_math_score, 2) as avg_math_score,
+    school_count,
+    total_test_takers
+FROM district_avg_scores
+ORDER BY avg_district_math_score DESC
+LIMIT 5
+        ]]></sql>
+        <combine_strategy>
+          <type>CUSTOM</type>
+          <description>Combine all CTEs into final query with ordering and limit</description>
+        </combine_strategy>
+      </output>
+    </sub_step>
+  </step>
+  
+  <!-- Step 5: SQL Execution -->
+  <step id="5" type="sql_execution">
+    <timestamp>2024-01-15T10:00:05Z</timestamp>
+    <agent>SQLExecutor</agent>
+    <input>
+      <sql>Final SQL from step 4.4</sql>
+      <database>california_schools</database>
+    </input>
+    <output>
+      <execution_result>
+        <status>SUCCESS</status>
+        <row_count>5</row_count>
+        <execution_time>0.234</execution_time>
+        <data>
+          <row>
+            <district_name>San Francisco Unified</district_name>
+            <avg_math_score>685.50</avg_math_score>
+            <school_count>12</school_count>
+            <total_test_takers>2450</total_test_takers>
+          </row>
+          <row>
+            <district_name>Palo Alto Unified</district_name>
+            <avg_math_score>678.25</avg_math_score>
+            <school_count>8</school_count>
+            <total_test_takers>1890</total_test_takers>
+          </row>
+          <row>
+            <district_name>Berkeley Unified</district_name>
+            <avg_math_score>672.80</avg_math_score>
+            <school_count>10</school_count>
+            <total_test_takers>2100</total_test_takers>
+          </row>
+          <row>
+            <district_name>Los Angeles Charter District</district_name>
+            <avg_math_score>665.40</avg_math_score>
+            <school_count>25</school_count>
+            <total_test_takers>5200</total_test_takers>
+          </row>
+          <row>
+            <district_name>Oakland Charter Schools</district_name>
+            <avg_math_score>658.90</avg_math_score>
+            <school_count>15</school_count>
+            <total_test_takers>3100</total_test_takers>
+          </row>
+        </data>
+      </execution_result>
+    </output>
+  </step>
+  
+  <!-- Step 6: Result Verification -->
+  <step id="6" type="result_verification">
+    <timestamp>2024-01-15T10:00:06Z</timestamp>
+    <agent>ResultVerifier</agent>
+    <input>
+      <original_query>List the top 5 school districts with the highest average SAT math scores...</original_query>
+      <execution_result>Results from step 5</execution_result>
+    </input>
+    <output>
+      <verification>
+        <status>VERIFIED</status>
+        <checks>
+          <check name="row_count" expected="5" actual="5" passed="true"/>
+          <check name="has_district_names" passed="true"/>
+          <check name="scores_ordered_desc" passed="true"/>
+          <check name="all_scores_valid" passed="true"/>
+          <check name="charter_percentage_constraint" passed="true" note="Verified through CTE logic"/>
+          <check name="test_taker_constraint" passed="true" note="All districts show 100+ test takers per school"/>
+        </checks>
+      </verification>
+    </output>
+  </step>
+  
+  <!-- Step 7: Final Response -->
+  <step id="7" type="final_response">
+    <timestamp>2024-01-15T10:00:07Z</timestamp>
+    <agent>ResponseFormatter</agent>
+    <input>
+      <verified_result>Results from step 6</verified_result>
+    </input>
+    <output>
+      <response>
+        <summary>Successfully found the top 5 school districts with highest average SAT math scores, filtered by charter school percentage (≥60%) and test taker count (>100)</summary>
+        <final_sql>SQL from step 4.4</final_sql>
+        <result_count>5</result_count>
+        <top_district>San Francisco Unified with average math score of 685.50</top_district>
+      </response>
+    </output>
+  </step>
+</workflow>

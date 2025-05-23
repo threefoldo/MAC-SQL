@@ -24,6 +24,9 @@ async def run_test_suite():
     print("-"*60)
     try:
         start = time.time()
+        import sys
+        import os
+        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from test_layer1_memory_types import run_all_tests as test_layer1
         test_layer1()
         duration = time.time() - start
