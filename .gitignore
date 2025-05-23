@@ -25,3 +25,4 @@ train_databases/
 database/
 *.sqlite
 .ipynb_checkpoints/
+*.json

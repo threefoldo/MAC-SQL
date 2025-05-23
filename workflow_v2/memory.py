@@ -5,6 +5,7 @@ This module contains memory implementations for the text-to-SQL workflow,
 including a key-value store memory implementation for the TaskOrchestrator.
 """
 
+import json
 import logging
 from typing import Dict, List, Optional, Any, Union
 
@@ -134,10 +135,13 @@ class KeyValueMemory(Memory):
         if mime_type is None:
             if isinstance(value, str): 
                 mime_type = MemoryMimeType.TEXT
-            elif isinstance(value, dict): 
+            elif isinstance(value, (dict, list)): 
                 mime_type = MemoryMimeType.JSON
+                # Convert to JSON string for storage
+                value = json.dumps(value)
             elif isinstance(value, (int, float, bool)): 
                 mime_type = MemoryMimeType.JSON  # Store simple types as JSON
+                value = json.dumps(value)
             elif isinstance(value, bytes): 
                 mime_type = MemoryMimeType.BINARY
             elif hasattr(value, "__class__") and value.__class__.__name__ == "Image": 
@@ -167,7 +171,18 @@ class KeyValueMemory(Memory):
         """
         query_result = await self.query(key)
         if query_result.results:
-            return query_result.results[0].content
+            content = query_result.results[0].content
+            mime_type = query_result.results[0].mime_type
+            
+            # Deserialize JSON content
+            if mime_type == MemoryMimeType.JSON and isinstance(content, str):
+                try:
+                    return json.loads(content)
+                except json.JSONDecodeError:
+                    logging.warning(f"Failed to decode JSON for key '{key}'")
+                    return content
+            
+            return content
         return None
 
     async def get_with_details(self, key: str) -> Optional[MemoryContent]:
