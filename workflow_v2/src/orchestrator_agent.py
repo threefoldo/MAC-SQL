@@ -27,7 +27,7 @@ from schema_reader import SchemaReader
 from query_analyzer_agent import QueryAnalyzerAgent
 from schema_linking_agent import SchemaLinkingAgent
 from sql_generator_agent import SQLGeneratorAgent
-from sql_executor_agent import SQLExecutorAgent
+from sql_evaluator_agent import SQLEvaluatorAgent
 from sql_executor import SQLExecutor
 
 from memory_content_types import TaskStatus, NodeStatus
@@ -78,7 +78,7 @@ class OrchestratorAgent:
         self.query_analyzer = QueryAnalyzerAgent(memory, model_name, debug)
         self.schema_linker = SchemaLinkingAgent(memory, model_name, debug)
         self.sql_generator = SQLGeneratorAgent(memory, model_name, debug)
-        self.sql_executor_agent = SQLExecutorAgent(memory, sql_executor, model_name, debug)
+        self.sql_evaluator_agent = SQLEvaluatorAgent(memory, sql_executor, model_name, debug)
         
         # Setup logging
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -256,7 +256,7 @@ Always check tree status after major operations.
         """
         self.logger.info(f"Executing SQL for node: {node_id}")
         
-        result = await self.sql_executor_agent.execute_and_evaluate(node_id)
+        result = await self.sql_evaluator_agent.execute_and_evaluate(node_id)
         
         execution = result.get("execution", {})
         evaluation = result.get("evaluation", {})

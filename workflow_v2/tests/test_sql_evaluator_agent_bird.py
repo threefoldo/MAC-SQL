@@ -1,5 +1,5 @@
 """
-Comprehensive test cases for SQL Executor Agent using actual BIRD dataset examples.
+Comprehensive test cases for SQL Evaluator Agent using actual BIRD dataset examples.
 
 This test suite covers:
 1. Successful SQL execution scenarios
@@ -21,7 +21,7 @@ from unittest.mock import Mock, AsyncMock
 from src.memory import KeyValueMemory
 from src.database_schema_manager import DatabaseSchemaManager
 from src.query_tree_manager import QueryTreeManager
-from src.sql_executor_agent import SQLExecutorAgent
+from src.sql_evaluator_agent import SQLEvaluatorAgent
 from src.sql_executor import SQLExecutor
 from src.memory_content_types import (
     TableSchema, ColumnInfo, QueryNode, QueryMapping, 
@@ -105,7 +105,7 @@ class MockMemoryAgentTool:
         return output
 
 
-class TestSQLExecutorAgentBIRD:
+class TestSQLEvaluatorAgentBIRD:
     """Test SQL execution with comprehensive BIRD dataset scenarios."""
     
     @pytest_asyncio.fixture
@@ -119,15 +119,15 @@ class TestSQLExecutorAgentBIRD:
         mock_sql_executor = MockSQLExecutor()
         
         # Monkey patch MemoryAgentTool before creating the agent
-        import sql_executor_agent
-        original_memory_agent_tool = sql_executor_agent.MemoryAgentTool
-        sql_executor_agent.MemoryAgentTool = MockMemoryAgentTool
+        import sql_evaluator_agent
+        original_memory_agent_tool = sql_evaluator_agent.MemoryAgentTool
+        sql_evaluator_agent.MemoryAgentTool = MockMemoryAgentTool
         
-        # Create SQL executor agent with debug enabled
-        agent = SQLExecutorAgent(memory, mock_sql_executor, model_name="gpt-4o", debug=True)
+        # Create SQL evaluator agent with debug enabled
+        agent = SQLEvaluatorAgent(memory, mock_sql_executor, model_name="gpt-4o", debug=True)
         
         # Restore original class
-        sql_executor_agent.MemoryAgentTool = original_memory_agent_tool
+        sql_evaluator_agent.MemoryAgentTool = original_memory_agent_tool
         
         yield {
             "memory": memory,
@@ -639,12 +639,12 @@ class TestSQLExecutorEdgeCases:
         mock_sql_executor = MockSQLExecutor()
         
         # Monkey patch MemoryAgentTool
-        import sql_executor_agent
-        original_memory_agent_tool = sql_executor_agent.MemoryAgentTool
-        sql_executor_agent.MemoryAgentTool = MockMemoryAgentTool
+        import sql_evaluator_agent
+        original_memory_agent_tool = sql_evaluator_agent.MemoryAgentTool
+        sql_evaluator_agent.MemoryAgentTool = MockMemoryAgentTool
         
-        agent = SQLExecutorAgent(memory, mock_sql_executor, model_name="gpt-4o", debug=True)
-        sql_executor_agent.MemoryAgentTool = original_memory_agent_tool
+        agent = SQLEvaluatorAgent(memory, mock_sql_executor, model_name="gpt-4o", debug=True)
+        sql_evaluator_agent.MemoryAgentTool = original_memory_agent_tool
         
         yield {
             "memory": memory,
@@ -783,7 +783,7 @@ if __name__ == "__main__":
     import asyncio
     async def run_tests():
         # Run a subset of tests
-        test_suite = TestSQLExecutorAgentBIRD()
+        test_suite = TestSQLEvaluatorAgentBIRD()
         setup_gen = test_suite.setup()
         setup_data = await setup_gen.__anext__()
         

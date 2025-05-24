@@ -2,31 +2,31 @@
 Layer 4: Test Individual Agents
 """
 
-import src.asyncio as asyncio
-import src.pytest as pytest
-from src.datetime import datetime
-from src.typing import Dict, Any, List
-import src.json as json
+import asyncio
+import pytest
+from datetime import datetime
+from typing import Dict, Any, List
+import json
 
 
 # Import setup for tests
-import src.sys as sys
-from src.pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from src.memory import KeyValueMemory
-from src.task_context_manager import TaskContextManager
-from src.database_schema_manager import DatabaseSchemaManager
-from src.query_tree_manager import QueryTreeManager
-from src.node_history_manager import NodeHistoryManager
+from keyvalue_memory import KeyValueMemory
+from task_context_manager import TaskContextManager
+from database_schema_manager import DatabaseSchemaManager
+from query_tree_manager import QueryTreeManager
+from node_history_manager import NodeHistoryManager
 
-from src.query_analyzer_agent import QueryAnalyzerAgent
-from src.schema_linking_agent import SchemaLinkingAgent
-from src.sql_generator_agent import SQLGeneratorAgent
-from src.sql_executor_agent import SQLExecutorAgent
-from src.sql_executor import SQLExecutor
+from query_analyzer_agent import QueryAnalyzerAgent
+from schema_linking_agent import SchemaLinkingAgent
+from sql_generator_agent import SQLGeneratorAgent
+from sql_evaluator_agent import SQLEvaluatorAgent
+from sql_executor import SQLExecutor
 
-from src.memory_content_types import (
+from memory_content_types import (
     TableSchema, ColumnInfo, QueryNode, QueryMapping,
     TableMapping, ColumnMapping, JoinMapping, NodeStatus,
     CombineStrategy, CombineStrategyType
@@ -426,7 +426,7 @@ class TestSQLGeneratorAgent:
         print("✅ Join SQL generation test passed")
 
 
-class TestSQLExecutorAgent:
+class TestSQLEvaluatorAgent:
     """Test SQL executor agent."""
     
     async def test_successful_execution(self):
@@ -455,7 +455,7 @@ class TestSQLExecutorAgent:
         
         # Create executor agent
         # NOTE: Skipping actual agent creation as it requires proper autogen setup
-        # executor_agent = SQLExecutorAgent(memory, mock_executor, debug=True)
+        # evaluator_agent = SQLEvaluatorAgent(memory, mock_executor, debug=True)
         
         # Simulate execution (manually since we can't mock the LLM)
         result = mock_executor.execute(node.sql)
@@ -589,11 +589,11 @@ async def run_all_tests():
     await generator_tester.test_join_sql_generation()
     
     # Test SQL Executor Agent
-    print("\n--- Testing SQLExecutorAgent ---")
-    executor_tester = TestSQLExecutorAgent()
-    await executor_tester.test_successful_execution()
-    await executor_tester.test_failed_execution()
-    await executor_tester.test_performance_evaluation()
+    print("\n--- Testing SQLEvaluatorAgent ---")
+    evaluator_tester = TestSQLEvaluatorAgent()
+    await evaluator_tester.test_successful_execution()
+    await evaluator_tester.test_failed_execution()
+    await evaluator_tester.test_performance_evaluation()
     
     print("\n✅ All Layer 4 tests passed!")
     print("\nNote: These tests simulate agent behavior since we cannot call real LLMs in unit tests.")

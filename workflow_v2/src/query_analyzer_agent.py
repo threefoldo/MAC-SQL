@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 
 from keyvalue_memory import KeyValueMemory
+from base_memory_agent import BaseMemoryAgent
 from task_context_manager import TaskContextManager
 from database_schema_manager import DatabaseSchemaManager
 from query_tree_manager import QueryTreeManager
@@ -21,10 +22,9 @@ from memory_content_types import (
     QueryNode, QueryMapping, TableMapping, ColumnMapping,
     CombineStrategy, CombineStrategyType, NodeStatus
 )
-from memory_agent_tool import MemoryAgentTool
 
 
-class QueryAnalyzerAgent:
+class QueryAnalyzerAgent(BaseMemoryAgent):
     """
     Analyzes user queries and creates structured query trees.
     
@@ -35,146 +35,88 @@ class QueryAnalyzerAgent:
     4. Builds a query tree structure in memory
     """
     
-    def __init__(self, 
-                 memory: KeyValueMemory,
-                 model_name: str = "gpt-4o",
-                 debug: bool = False):
-        """
-        Initialize the query analyzer agent.
-        
-        Args:
-            memory: The KeyValueMemory instance
-            model_name: The LLM model to use
-            debug: Whether to enable debug logging
-        """
-        self.memory = memory
-        self.model_name = model_name
-        self.debug = debug
-        
-        # Initialize managers
-        self.task_manager = TaskContextManager(memory)
-        self.schema_manager = DatabaseSchemaManager(memory)
-        self.tree_manager = QueryTreeManager(memory)
-        self.history_manager = NodeHistoryManager(memory)
-        
-        # Setup logging
-        self.logger = logging.getLogger(self.__class__.__name__)
-        if debug:
-            self.logger.setLevel(logging.DEBUG)
-        
-        # Create the agent tool
-        self._setup_agent()
+    agent_name = "query_analyzer"
     
-    def _setup_agent(self):
-        """Setup the query analyzer agent with memory callbacks."""
-        
-        # Agent signature
-        signature = """
-        Analyze a user's natural language query for text-to-SQL conversion.
-        
-        You will:
-        1. Understand the user's intent
-        2. Identify tables and columns needed
-        3. Determine if the query is simple or complex
-        4. For complex queries, decompose into simpler sub-queries
-        
-        Input:
-        - query: The user's natural language query
-        - schema: Database schema in XML format
-        
-        Output:
-        XML format with analysis results
-        """
-        
-        # Instructions for the agent
-        instructions = """
-        You are a query analyzer for text-to-SQL conversion. Your job is to:
-        
-        1. Analyze the user's query to understand their intent
-        2. Identify which tables and columns are needed
-        3. Determine query complexity:
-           - Simple: Single table or straightforward join
-           - Complex: Multiple aggregations, nested queries, complex conditions
-        
-        4. For complex queries, decompose them into simpler sub-queries that can be:
-           - Executed independently
-           - Combined to produce the final result
-        
-        Output your analysis in this XML format:
-        
-        <analysis>
-          <intent>Clear description of what the user wants</intent>
-          <complexity>simple|complex</complexity>
-          <tables>
-            <table name="table_name" purpose="why this table is needed"/>
-          </tables>
-          <decomposition>
-            <subquery id="1">
-              <intent>What this subquery does</intent>
-              <description>Detailed description</description>
-              <tables>table1, table2</tables>
-            </subquery>
-            <subquery id="2">
-              <intent>What this subquery does</intent>
-              <description>Detailed description</description>
-              <tables>table3</tables>
-            </subquery>
-            <combination>
-              <strategy>union|join|aggregate|filter|custom</strategy>
-              <description>How to combine the subquery results</description>
-            </combination>
-          </decomposition>
-        </analysis>
-        
-        For simple queries, omit the decomposition section.
-        """
-        
-        # Create the agent
-        self.agent = MemoryAgentTool(
-            name="query_analyzer",
-            signature=signature,
-            instructions=instructions,
-            model=self.model_name,
-            memory=self.memory,
-            pre_callback=self._pre_callback,
-            post_callback=self._post_callback,
-            debug=self.debug
-        )
+    def _initialize_managers(self):
+        """Initialize the managers needed for query analysis"""
+        self.task_manager = TaskContextManager(self.memory)
+        self.schema_manager = DatabaseSchemaManager(self.memory)
+        self.tree_manager = QueryTreeManager(self.memory)
+        self.history_manager = NodeHistoryManager(self.memory)
     
-    async def _pre_callback(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Pre-processing callback to prepare context for the agent.
+    def _build_system_message(self) -> str:
+        """Build the system message for query analysis"""
+        return """You are a query analyzer for text-to-SQL conversion. Your job is to:
+
+1. Analyze the user's query to understand their intent
+2. Identify which tables and columns are needed
+3. Determine query complexity:
+   - Simple: Single table or straightforward join
+   - Complex: Multiple aggregations, nested queries, complex conditions
+
+4. For complex queries, decompose them into simpler sub-queries that can be:
+   - Executed independently
+   - Combined to produce the final result
+
+Output your analysis in this XML format:
+
+<analysis>
+  <intent>Clear description of what the user wants</intent>
+  <complexity>simple|complex</complexity>
+  <tables>
+    <table name="table_name" purpose="why this table is needed"/>
+  </tables>
+  <decomposition>
+    <subquery id="1">
+      <intent>What this subquery does</intent>
+      <description>Detailed description</description>
+      <tables>table1, table2</tables>
+    </subquery>
+    <subquery id="2">
+      <intent>What this subquery does</intent>
+      <description>Detailed description</description>
+      <tables>table3</tables>
+    </subquery>
+    <combination>
+      <strategy>union|join|aggregate|filter|custom</strategy>
+      <description>How to combine the subquery results</description>
+    </combination>
+  </decomposition>
+</analysis>
+
+For simple queries, omit the decomposition section."""
+    
+    async def _reader_callback(self, memory: KeyValueMemory, task: str, cancellation_token) -> Dict[str, Any]:
+        """Read context from memory before analyzing the query"""
+        context = {}
         
-        Args:
-            inputs: The original inputs
-            
-        Returns:
-            Enhanced inputs with schema context
-        """
+        # Add the query to context
+        context["query"] = task
+        
         # Get database schema
         schema_xml = await self._get_schema_xml()
+        context["schema"] = schema_xml
         
-        # Add schema to inputs
-        inputs["schema"] = schema_xml
+        # Get any existing task context
+        task_context = await self.task_manager.get_current_context()
+        if task_context:
+            context["database_id"] = task_context.database_id
         
-        self.logger.debug(f"Pre-callback: Added schema context")
+        self.logger.debug(f"Query analyzer context prepared with schema length: {len(schema_xml)}")
         
-        return inputs
+        return context
     
-    async def _post_callback(self, output: str, original_inputs: Dict[str, Any]) -> str:
-        """
-        Post-processing callback to parse results and update memory.
-        
-        Args:
-            output: The agent's output
-            original_inputs: The original inputs
+    async def _parser_callback(self, memory: KeyValueMemory, task: str, result, cancellation_token) -> None:
+        """Parse the analysis results and update memory"""
+        if not result.messages:
+            self.logger.warning("No messages in result")
+            return
             
-        Returns:
-            The processed output
-        """
+        last_message = result.messages[-1].content
+        
         try:
             # Parse the XML output
-            analysis = self._parse_analysis_xml(output)
+            analysis = self._parse_analysis_xml(last_message)
             
             if analysis:
                 # Create the root node with the analyzed intent
@@ -191,17 +133,15 @@ class QueryAnalyzerAgent:
                     await self._create_subquery_nodes(root_id, analysis["decomposition"])
                 
                 # Store the analysis result
-                await self.memory.set("query_analysis", analysis)
+                await memory.set("query_analysis", analysis)
                 
                 self.logger.info(f"Query analysis completed. Complexity: {analysis.get('complexity')}")
                 
         except Exception as e:
-            self.logger.error(f"Error in post-callback: {str(e)}", exc_info=True)
-        
-        return output
+            self.logger.error(f"Error parsing analysis results: {str(e)}", exc_info=True)
     
     async def _get_schema_xml(self) -> str:
-        """Get database schema in XML format."""
+        """Get database schema in XML format"""
         tables = await self.schema_manager.get_all_tables()
         
         if not tables:
@@ -235,7 +175,7 @@ class QueryAnalyzerAgent:
         return '\n'.join(xml_parts)
     
     def _parse_analysis_xml(self, output: str) -> Optional[Dict[str, Any]]:
-        """Parse the analysis XML output."""
+        """Parse the analysis XML output"""
         try:
             # Extract XML from output
             xml_match = re.search(r'<analysis>.*?</analysis>', output, re.DOTALL)
@@ -303,7 +243,7 @@ class QueryAnalyzerAgent:
             return None
     
     async def _create_subquery_nodes(self, parent_id: str, decomposition: Dict[str, Any]) -> None:
-        """Create sub-query nodes in the tree."""
+        """Create sub-query nodes in the tree"""
         subqueries = decomposition.get("subqueries", [])
         combination = decomposition.get("combination", {})
         
@@ -359,7 +299,7 @@ class QueryAnalyzerAgent:
             await self.tree_manager.update_node_combine_strategy(parent_id, combine_strategy)
     
     def _parse_strategy_type(self, strategy: str) -> CombineStrategyType:
-        """Parse strategy string to enum."""
+        """Parse strategy string to enum"""
         strategy_map = {
             "union": CombineStrategyType.UNION,
             "join": CombineStrategyType.JOIN,
@@ -369,28 +309,8 @@ class QueryAnalyzerAgent:
         }
         return strategy_map.get(strategy.lower(), CombineStrategyType.CUSTOM)
     
-    async def analyze(self, query: str) -> Dict[str, Any]:
-        """
-        Analyze a user query and create structured intent.
-        
-        Args:
-            query: The user's natural language query
-            
-        Returns:
-            Analysis result dictionary
-        """
-        self.logger.info(f"Analyzing query: {query}")
-        
-        # Run the agent
-        result = await self.agent.run({"query": query})
-        
-        # Get the stored analysis
-        analysis = await self.memory.get("query_analysis")
-        
-        return analysis if analysis else {"error": "Analysis failed"}
-    
     async def get_analysis_summary(self) -> Dict[str, Any]:
-        """Get a summary of the current analysis."""
+        """Get a summary of the current analysis"""
         analysis = await self.memory.get("query_analysis")
         tree_stats = await self.tree_manager.get_tree_stats()
         

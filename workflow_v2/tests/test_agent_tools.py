@@ -4,31 +4,31 @@ Test cases for all agent tools using the actual implementation patterns
 Tests the agent tools based on how they work in the codebase.
 """
 
-import src.asyncio as asyncio
-import src.pytest as pytest
-from src.datetime import datetime
-from src.pathlib import Path
-import src.sys as sys
-from src.typing import Dict, Any, List
+import asyncio
+import pytest
+from datetime import datetime
+from pathlib import Path
+import sys
+from typing import Dict, Any, List
 
 # Add parent directory to path for imports
-sys.path.append(str(Path(__file__).parent.parent))
+sys.path.append(str(Path(__file__).parent.parent / 'src'))
 
-from src.memory import KeyValueMemory
-from src.memory_content_types import (
+from keyvalue_memory import KeyValueMemory
+from memory_content_types import (
     TaskContext, QueryNode, NodeStatus, TaskStatus,
     CombineStrategy, CombineStrategyType, QueryMapping,
     TableMapping, ColumnMapping, JoinMapping,
     TableSchema, ColumnInfo, ExecutionResult
 )
-from src.task_context_manager import TaskContextManager
-from src.query_tree_manager import QueryTreeManager
-from src.database_schema_manager import DatabaseSchemaManager
-from src.node_history_manager import NodeHistoryManager
-from src.query_analyzer_agent import QueryAnalyzerAgent
-from src.schema_linking_agent import SchemaLinkingAgent
-from src.sql_generator_agent import SQLGeneratorAgent
-from src.sql_executor_agent import SQLExecutorAgent
+from task_context_manager import TaskContextManager
+from query_tree_manager import QueryTreeManager
+from database_schema_manager import DatabaseSchemaManager
+from node_history_manager import NodeHistoryManager
+from query_analyzer_agent import QueryAnalyzerAgent
+from schema_linking_agent import SchemaLinkingAgent
+from sql_generator_agent import SQLGeneratorAgent
+from sql_evaluator_agent import SQLEvaluatorAgent
 
 
 async def setup_test_schema(schema_manager: DatabaseSchemaManager):
