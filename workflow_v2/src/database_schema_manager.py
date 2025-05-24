@@ -8,7 +8,8 @@ import logging
 from typing import Dict, List, Optional, Any
 
 from keyvalue_memory import KeyValueMemory
-from memory_types import TableSchema, ColumnInfo
+from memory_content_types import TableSchema, ColumnInfo
+from schema_reader import SchemaReader
 
 
 class DatabaseSchemaManager:
@@ -301,3 +302,122 @@ class DatabaseSchemaManager:
             'total_foreign_keys': total_foreign_keys,
             'average_columns_per_table': total_columns / len(tables) if tables else 0
         }
+    
+    async def load_from_schema_reader(self, schema_reader: SchemaReader, db_id: str) -> None:
+        """
+        Load database schema from SchemaReader and populate it into memory.
+        
+        Args:
+            schema_reader: The SchemaReader instance with loaded database information
+            db_id: The database ID to load
+        """
+        # Initialize empty schema first
+        await self.initialize()
+        
+        # Load database info if not already loaded
+        if db_id not in schema_reader.db2infos:
+            db_info = schema_reader._load_single_db_info(db_id)
+            schema_reader.db2infos[db_id] = db_info
+        else:
+            db_info = schema_reader.db2infos[db_id]
+        
+        # Get the database JSON info for column types
+        db_json = schema_reader.db2dbjsons.get(db_id, {})
+        
+        # Extract information from schema_reader
+        desc_dict = db_info['desc_dict']    # table -> [(column_name, full_column_name, extra_desc)]
+        value_dict = db_info['value_dict']  # table -> [(column_name, value_examples_str)]
+        pk_dict = db_info['pk_dict']        # table -> [primary_key_column_names]
+        fk_dict = db_info['fk_dict']        # table -> [(from_col, to_table, to_col)]
+        
+        # Get column types from the JSON data
+        column_types = {}  # {(table_idx, col_name): type}
+        if 'column_types' in db_json:
+            for col_idx, col_type in enumerate(db_json['column_types']):
+                if col_idx < len(db_json['column_names_original']):
+                    table_idx, col_name = db_json['column_names_original'][col_idx]
+                    if table_idx >= 0:  # -1 means special columns like *
+                        column_types[(table_idx, col_name)] = col_type
+        
+        # Get table names mapping
+        table_names = db_json.get('table_names_original', [])
+        
+        # Process each table
+        for table_idx, table_name in enumerate(table_names):
+            if table_name not in desc_dict:
+                continue
+                
+            # Get column descriptions
+            columns_desc = desc_dict[table_name]
+            columns_val = value_dict.get(table_name, [])
+            primary_keys = pk_dict.get(table_name, [])
+            foreign_keys = fk_dict.get(table_name, [])
+            
+            # Build columns dictionary
+            columns = {}
+            
+            # Process each column
+            for col_idx, (col_name, full_col_name, extra_desc) in enumerate(columns_desc):
+                # Get column type
+                col_type = column_types.get((table_idx, col_name), "TEXT")
+                
+                # Determine if it's a primary key
+                is_primary_key = col_name in primary_keys
+                
+                # Determine if it's a foreign key and get references
+                is_foreign_key = False
+                references = None
+                for fk_col, to_table, to_col in foreign_keys:
+                    if fk_col == col_name:
+                        is_foreign_key = True
+                        references = {
+                            "table": to_table,
+                            "column": to_col
+                        }
+                        break
+                
+                # Create ColumnInfo
+                column_info = ColumnInfo(
+                    dataType=col_type,
+                    nullable=True,  # Default to nullable, can be refined later
+                    isPrimaryKey=is_primary_key,
+                    isForeignKey=is_foreign_key,
+                    references=references
+                )
+                
+                columns[col_name] = column_info
+            
+            # Get sample data for this table
+            sample_data = []
+            if col_idx < len(columns_val):
+                # Extract some example values from the value string
+                for col_name, values_str in columns_val:
+                    if values_str and values_str != '[]':
+                        # Parse the values string (it's in format like "[val1, val2, ...]")
+                        try:
+                            import ast
+                            values = ast.literal_eval(values_str)
+                            if isinstance(values, list) and len(values) > 0:
+                                # Create sample rows from the first few values
+                                for i, val in enumerate(values[:3]):  # Take first 3 values
+                                    if i >= len(sample_data):
+                                        sample_data.append({})
+                                    sample_data[i][col_name] = val
+                        except:
+                            pass
+            
+            # Create TableSchema
+            table_schema = TableSchema(
+                name=table_name,
+                columns=columns,
+                sampleData=sample_data,
+                metadata={
+                    "description": f"Table {table_name} from {db_id} database",
+                    "row_count": len(columns)  # This is column count, actual row count not available
+                }
+            )
+            
+            # Add table to schema
+            await self.add_table(table_schema)
+        
+        self.logger.info(f"Loaded schema for database '{db_id}' with {len(table_names)} tables")

@@ -15,7 +15,7 @@ from src.typing import Dict, Any, List
 sys.path.append(str(Path(__file__).parent.parent))
 
 from src.memory import KeyValueMemory
-from src.memory_types import (
+from src.memory_content_types import (
     TaskContext, QueryNode, NodeStatus, TaskStatus,
     CombineStrategy, CombineStrategyType, QueryMapping,
     TableMapping, ColumnMapping, JoinMapping,

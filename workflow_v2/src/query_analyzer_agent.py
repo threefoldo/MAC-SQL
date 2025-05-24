@@ -17,7 +17,7 @@ from task_context_manager import TaskContextManager
 from database_schema_manager import DatabaseSchemaManager
 from query_tree_manager import QueryTreeManager
 from node_history_manager import NodeHistoryManager
-from memory_types import (
+from memory_content_types import (
     QueryNode, QueryMapping, TableMapping, ColumnMapping,
     CombineStrategy, CombineStrategyType, NodeStatus
 )

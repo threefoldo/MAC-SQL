@@ -2,28 +2,30 @@
 Layer 3: Test Memory Managers
 """
 
-import src.asyncio as asyncio
-import src.pytest as pytest
-from src.datetime import datetime
-from src.typing import Dict, Any, List
+import asyncio
+import pytest
+from datetime import datetime
+from typing import Dict, Any, List
+import os
 
 
 # Import setup for tests
-import src.sys as sys
-from src.pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from src.memory import KeyValueMemory
-from src.task_context_manager import TaskContextManager
-from src.database_schema_manager import DatabaseSchemaManager
-from src.query_tree_manager import QueryTreeManager
-from src.node_history_manager import NodeHistoryManager
-from src.memory_types import (
+from keyvalue_memory import KeyValueMemory
+from task_context_manager import TaskContextManager
+from database_schema_manager import DatabaseSchemaManager
+from query_tree_manager import QueryTreeManager
+from node_history_manager import NodeHistoryManager
+from memory_content_types import (
     TaskStatus, NodeStatus, NodeOperationType,
     TableSchema, ColumnInfo, QueryNode, QueryMapping,
     TableMapping, ColumnMapping, JoinMapping, CombineStrategy,
     CombineStrategyType, ExecutionResult
 )
+from schema_reader import SchemaReader
 
 
 class TestTaskContextManager:
@@ -312,6 +314,70 @@ class TestDatabaseSchemaManager:
         assert summary["total_primary_keys"] == 2
         
         print("✅ Metadata and search tests passed")
+    
+    async def test_load_from_schema_reader(self):
+        """Test loading schema from SchemaReader."""
+        memory = KeyValueMemory()
+        manager = DatabaseSchemaManager(memory)
+        
+        # Check if BIRD data exists
+        data_path = "/home/norman/work/text-to-sql/MAC-SQL/data/bird"
+        if not os.path.exists(data_path):
+            print("⚠️  BIRD dataset not found, skipping schema reader test")
+            return
+        
+        # Initialize schema reader
+        tables_json_path = os.path.join(data_path, "dev_tables.json")
+        if not os.path.exists(tables_json_path):
+            print("⚠️  dev_tables.json not found, skipping schema reader test")
+            return
+            
+        schema_reader = SchemaReader(
+            data_path=data_path,
+            tables_json_path=tables_json_path,
+            dataset_name="bird",
+            lazy=True  # Load on demand
+        )
+        
+        # Load california_schools database
+        db_id = "california_schools"
+        await manager.load_from_schema_reader(schema_reader, db_id)
+        
+        # Verify tables were loaded
+        table_names = await manager.get_table_names()
+        assert len(table_names) > 0
+        print(f"Loaded {len(table_names)} tables: {table_names}")
+        
+        # Check specific tables from california_schools
+        expected_tables = ["frpm", "satscores", "schools"]
+        for table_name in expected_tables:
+            table = await manager.get_table(table_name)
+            assert table is not None
+            assert len(table.columns) > 0
+            print(f"Table '{table_name}' has {len(table.columns)} columns")
+            
+            # Check for primary keys
+            pks = await manager.get_primary_keys(table_name)
+            if pks:
+                print(f"  Primary keys: {pks}")
+            
+            # Check for foreign keys
+            fks = await manager.get_foreign_keys(table_name)
+            if fks:
+                print(f"  Foreign keys: {fks}")
+        
+        # Test relationships
+        relationships = await manager.find_relationships("frpm", "schools")
+        if relationships:
+            print(f"Found {len(relationships)} relationships between frpm and schools")
+            for rel in relationships:
+                print(f"  {rel['from_table']}.{rel['from_column']} -> {rel['to_table']}.{rel['to_column']}")
+        
+        # Get schema summary
+        summary = await manager.get_schema_summary()
+        print(f"Schema summary: {summary}")
+        
+        print("✅ Schema loading from SchemaReader tests passed")
 
 
 class TestQueryTreeManager:
@@ -714,6 +780,7 @@ async def run_all_tests():
     await schema_tester.test_column_operations()
     await schema_tester.test_relationship_finding()
     await schema_tester.test_metadata_and_search()
+    await schema_tester.test_load_from_schema_reader()
     
     # Test Query Tree Manager
     print("\n--- Testing QueryTreeManager ---")

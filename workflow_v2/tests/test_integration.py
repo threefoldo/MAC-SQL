@@ -19,7 +19,7 @@ from src.database_schema_manager import DatabaseSchemaManager
 from src.query_tree_manager import QueryTreeManager
 from src.node_history_manager import NodeHistoryManager
 
-from src.memory_types import (
+from src.memory_content_types import (
     TaskStatus, NodeStatus, TableSchema, ColumnInfo,
     QueryNode, QueryMapping, TableMapping, ColumnMapping,
     JoinMapping, ExecutionResult, CombineStrategy, CombineStrategyType

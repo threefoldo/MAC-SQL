@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 
 from keyvalue_memory import KeyValueMemory
-from memory_types import NodeOperation, NodeOperationType, QueryMapping
+from memory_content_types import NodeOperation, NodeOperationType, QueryMapping
 
 
 class NodeHistoryManager:

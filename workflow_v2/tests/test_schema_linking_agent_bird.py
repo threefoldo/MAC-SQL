@@ -20,7 +20,7 @@ from src.memory import KeyValueMemory
 from src.database_schema_manager import DatabaseSchemaManager
 from src.query_tree_manager import QueryTreeManager
 from src.schema_linking_agent import SchemaLinkingAgent
-from src.memory_types import TableSchema, ColumnInfo
+from src.memory_content_types import TableSchema, ColumnInfo
 
 
 class MockMemoryAgentTool:

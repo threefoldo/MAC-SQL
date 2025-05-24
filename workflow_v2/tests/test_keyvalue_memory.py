@@ -11,8 +11,8 @@ import sys
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add src directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 # Configure logging
 logging.basicConfig(
@@ -29,7 +29,7 @@ except ImportError:
     sys.exit(1)
 
 # Import our KeyValueMemory class
-from src.keyvalue_memory import KeyValueMemory
+from keyvalue_memory import KeyValueMemory
 
 
 class TestKeyValueMemory:

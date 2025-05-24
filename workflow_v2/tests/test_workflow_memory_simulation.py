@@ -21,7 +21,7 @@ import src.sys as sys
 from src.pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.memory_types import (
+from src.memory_content_types import (
     TableSchema, ColumnInfo,
     QueryNode, NodeStatus, QueryMapping, TableMapping, ColumnMapping, JoinMapping,
     ExecutionResult, CombineStrategy, CombineStrategyType,

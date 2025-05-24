@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 
 from keyvalue_memory import KeyValueMemory
-from memory_types import QueryNode, QueryMapping, CombineStrategy, ExecutionResult, NodeStatus
+from memory_content_types import QueryNode, QueryMapping, CombineStrategy, ExecutionResult, NodeStatus
 
 
 class QueryTreeManager:

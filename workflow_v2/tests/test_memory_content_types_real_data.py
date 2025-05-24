@@ -4,28 +4,25 @@ This test validates that memory types correctly preserve all critical informatio
 when converting from real data to JSON format.
 """
 
-import src.json as json
-import src.os as os
-import src.sys as sys
-from src.typing import Dict, List, Any
-from src.datetime import datetime
-
-# Add the current directory to Python path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+import json
+import os
+import sys
+from typing import Dict, List, Any
+from datetime import datetime
 
 
 # Import setup for tests
-import src.sys as sys
-from src.pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from src.memory_types import (
+from memory_content_types import (
     TableSchema, ColumnInfo,
     QueryNode, NodeStatus, QueryMapping, TableMapping, ColumnMapping, JoinMapping,
     ExecutionResult, CombineStrategy, CombineStrategyType,
     TaskContext, TaskStatus
 )
-from src.schema_reader import SchemaReader
+from schema_reader import SchemaReader
 
 
 def test_table_schema_with_real_data():

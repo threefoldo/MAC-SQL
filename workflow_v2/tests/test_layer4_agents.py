@@ -26,7 +26,7 @@ from src.sql_generator_agent import SQLGeneratorAgent
 from src.sql_executor_agent import SQLExecutorAgent
 from src.sql_executor import SQLExecutor
 
-from src.memory_types import (
+from src.memory_content_types import (
     TableSchema, ColumnInfo, QueryNode, QueryMapping,
     TableMapping, ColumnMapping, JoinMapping, NodeStatus,
     CombineStrategy, CombineStrategyType
@@ -459,7 +459,7 @@ class TestSQLExecutorAgent:
         
         # Simulate execution (manually since we can't mock the LLM)
         result = mock_executor.execute(node.sql)
-        from memory_types import ExecutionResult
+        from memory_content_types import ExecutionResult
         exec_result = ExecutionResult(
             data=result,
             rowCount=len(result),
@@ -502,7 +502,7 @@ class TestSQLExecutorAgent:
         try:
             result = mock_executor.execute(node.sql)
         except Exception as e:
-            from memory_types import ExecutionResult
+            from memory_content_types import ExecutionResult
             exec_result = ExecutionResult(
                 data=[],
                 rowCount=0,

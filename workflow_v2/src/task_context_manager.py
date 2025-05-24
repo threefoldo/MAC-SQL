@@ -9,7 +9,7 @@ from typing import Optional
 from datetime import datetime
 
 from keyvalue_memory import KeyValueMemory
-from memory_types import TaskContext, TaskStatus
+from memory_content_types import TaskContext, TaskStatus
 
 
 class TaskContextManager:

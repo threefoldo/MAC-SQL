@@ -49,7 +49,7 @@ def main():
     # Define test order (dependencies first)
     test_files = [
         # Core component tests
-        "test_layer1_memory_types.py",
+        "test_layer1_memory_content_types.py",
         "test_layer2_memory.py", 
         "test_layer3_managers.py",
         
@@ -57,7 +57,7 @@ def main():
         "test_workflow_simple.py",
         
         # Real data tests
-        "test_memory_types_real_data.py",
+        "test_memory_content_types_real_data.py",
         
         # Advanced scenario tests
         "test_workflow_cases.py",

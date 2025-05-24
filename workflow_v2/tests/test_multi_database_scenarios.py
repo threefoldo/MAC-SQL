@@ -19,7 +19,7 @@ from src.task_context_manager import TaskContextManager
 from src.query_tree_manager import QueryTreeManager
 from src.database_schema_manager import DatabaseSchemaManager
 from src.node_history_manager import NodeHistoryManager
-from src.memory_types import (
+from src.memory_content_types import (
     TaskContext, TaskStatus, QueryNode, NodeStatus, 
     QueryMapping, TableMapping, ColumnMapping, CombineStrategy, CombineStrategyType,
     ExecutionResult, NodeOperation, NodeOperationType

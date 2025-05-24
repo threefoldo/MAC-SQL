@@ -16,7 +16,7 @@ from database_schema_manager import DatabaseSchemaManager
 from query_tree_manager import QueryTreeManager
 from node_history_manager import NodeHistoryManager
 from sql_executor import SQLExecutor
-from memory_types import (
+from memory_content_types import (
     QueryNode, ExecutionResult, NodeStatus
 )
 from memory_agent_tool import MemoryAgentTool

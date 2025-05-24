@@ -30,7 +30,7 @@ from sql_generator_agent import SQLGeneratorAgent
 from sql_executor_agent import SQLExecutorAgent
 from sql_executor import SQLExecutor
 
-from memory_types import TaskStatus, NodeStatus
+from memory_content_types import TaskStatus, NodeStatus
 
 
 class OrchestratorAgent:

@@ -10,9 +10,9 @@ from typing import Dict, Any
 # Import setup for tests
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from src.memory_types import (
+from memory_content_types import (
     TaskContext, TaskStatus, NodeStatus, NodeOperationType,
     CombineStrategyType, ColumnInfo, TableSchema, TableMapping,
     ColumnMapping, JoinMapping, QueryMapping, CombineStrategy,
