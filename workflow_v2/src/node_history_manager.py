@@ -8,7 +8,7 @@ import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
-from memory import KeyValueMemory
+from keyvalue_memory import KeyValueMemory
 from memory_types import NodeOperation, NodeOperationType, QueryMapping
 
 

@@ -8,7 +8,7 @@ import logging
 from typing import Optional
 from datetime import datetime
 
-from memory import KeyValueMemory
+from keyvalue_memory import KeyValueMemory
 from memory_types import TaskContext, TaskStatus
 
 

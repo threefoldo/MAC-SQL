@@ -4,35 +4,35 @@ This test loads a simulated workflow from XML and verifies that all data
 and logic can be preserved in the memory structures.
 """
 
-import json
-import os
-import sys
+import src.json as json
+import src.os as os
+import src.sys as sys
 import xml.etree.ElementTree as ET
-from typing import Dict, List, Any, Optional
-from datetime import datetime
-import asyncio
+from src.typing import Dict, List, Any, Optional
+from src.datetime import datetime
+import src.asyncio as asyncio
 
 # Add the current directory to Python path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 
 # Import setup for tests
-import sys
-from pathlib import Path
+import src.sys as sys
+from src.pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from memory_types import (
+from src.memory_types import (
     TableSchema, ColumnInfo,
     QueryNode, NodeStatus, QueryMapping, TableMapping, ColumnMapping, JoinMapping,
     ExecutionResult, CombineStrategy, CombineStrategyType,
     TaskContext, TaskStatus,
     NodeOperation, NodeOperationType
 )
-from memory import KeyValueMemory
-from task_context_manager import TaskContextManager
-from query_tree_manager import QueryTreeManager
-from database_schema_manager import DatabaseSchemaManager
-from node_history_manager import NodeHistoryManager
+from src.memory import KeyValueMemory
+from src.task_context_manager import TaskContextManager
+from src.query_tree_manager import QueryTreeManager
+from src.database_schema_manager import DatabaseSchemaManager
+from src.node_history_manager import NodeHistoryManager
 
 
 def parse_workflow_xml(xml_path: str) -> Dict[str, Any]:

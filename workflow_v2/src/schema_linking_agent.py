@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional, Any, Set
 from datetime import datetime
 
-from memory import KeyValueMemory
+from keyvalue_memory import KeyValueMemory
 from database_schema_manager import DatabaseSchemaManager
 from query_tree_manager import QueryTreeManager
 from node_history_manager import NodeHistoryManager

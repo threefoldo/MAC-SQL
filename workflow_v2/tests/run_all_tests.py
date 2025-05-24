@@ -2,10 +2,10 @@
 Test Runner: Execute all tests in the correct order
 """
 
-import asyncio
-import sys
-import time
-from datetime import datetime
+import src.asyncio as asyncio
+import src.sys as sys
+import src.time as time
+from src.datetime import datetime
 
 
 async def run_test_suite():

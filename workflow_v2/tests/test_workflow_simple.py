@@ -4,28 +4,28 @@ This test validates the basic functionality of memory components
 without the complexity of the full XML workflow.
 """
 
-import json
-import asyncio
-from datetime import datetime
-from typing import Dict, Any
+import src.json as json
+import src.asyncio as asyncio
+from src.datetime import datetime
+from src.typing import Dict, Any
 
 # Import setup for tests
-import sys
-from pathlib import Path
+import src.sys as sys
+from src.pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from memory_types import (
+from src.memory_types import (
     TableSchema, ColumnInfo,
     QueryNode, NodeStatus, QueryMapping, TableMapping, ColumnMapping,
     ExecutionResult,
     TaskContext, TaskStatus,
     NodeOperation, NodeOperationType
 )
-from memory import KeyValueMemory
-from task_context_manager import TaskContextManager
-from query_tree_manager import QueryTreeManager
-from database_schema_manager import DatabaseSchemaManager
-from node_history_manager import NodeHistoryManager
+from src.memory import KeyValueMemory
+from src.task_context_manager import TaskContextManager
+from src.query_tree_manager import QueryTreeManager
+from src.database_schema_manager import DatabaseSchemaManager
+from src.node_history_manager import NodeHistoryManager
 
 
 async def test_workflow_memory():

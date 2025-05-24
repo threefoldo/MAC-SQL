@@ -3,23 +3,23 @@ Test cases for various workflow scenarios in the text-to-SQL system.
 Tests different query types, decomposition patterns, and real-world use cases.
 """
 
-import asyncio
-import json
-from datetime import datetime
-from pathlib import Path
+import src.asyncio as asyncio
+import src.json as json
+from src.datetime import datetime
+from src.pathlib import Path
 
 
 # Import setup for tests
-import sys
-from pathlib import Path
+import src.sys as sys
+from src.pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from memory import KeyValueMemory
-from task_context_manager import TaskContextManager
-from query_tree_manager import QueryTreeManager
-from database_schema_manager import DatabaseSchemaManager
-from node_history_manager import NodeHistoryManager
-from memory_types import (
+from src.memory import KeyValueMemory
+from src.task_context_manager import TaskContextManager
+from src.query_tree_manager import QueryTreeManager
+from src.database_schema_manager import DatabaseSchemaManager
+from src.node_history_manager import NodeHistoryManager
+from src.memory_types import (
     TaskContext, QueryNode, NodeStatus, QueryMapping,
     TableSchema, ColumnInfo, NodeOperation, NodeOperationType
 )

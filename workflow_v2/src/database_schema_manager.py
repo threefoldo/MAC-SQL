@@ -7,7 +7,7 @@ This module provides easy access to database schema data stored in KeyValueMemor
 import logging
 from typing import Dict, List, Optional, Any
 
-from memory import KeyValueMemory
+from keyvalue_memory import KeyValueMemory
 from memory_types import TableSchema, ColumnInfo
 
 

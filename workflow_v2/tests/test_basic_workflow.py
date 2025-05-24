@@ -2,20 +2,20 @@
 Basic workflow test - Simple functionality validation
 """
 
-import asyncio
-from datetime import datetime
+import src.asyncio as asyncio
+from src.datetime import datetime
 
 # Import setup for tests
-import sys
-from pathlib import Path
+import src.sys as sys
+from src.pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from memory import KeyValueMemory
-from task_context_manager import TaskContextManager
-from query_tree_manager import QueryTreeManager
-from database_schema_manager import DatabaseSchemaManager
-from node_history_manager import NodeHistoryManager
-from memory_types import (
+from src.memory import KeyValueMemory
+from src.task_context_manager import TaskContextManager
+from src.query_tree_manager import QueryTreeManager
+from src.database_schema_manager import DatabaseSchemaManager
+from src.node_history_manager import NodeHistoryManager
+from src.memory_types import (
     TaskContext, TaskStatus, QueryNode, NodeStatus, 
     QueryMapping, TableMapping, ColumnMapping,
     ExecutionResult, NodeOperation, NodeOperationType

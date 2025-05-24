@@ -17,7 +17,7 @@ from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.messages import TextMessage, ToolCallMessage, ToolCallResultMessage
 from autogen_core.tools import FunctionTool
 
-from memory import KeyValueMemory
+from keyvalue_memory import KeyValueMemory
 from task_context_manager import TaskContextManager
 from database_schema_manager import DatabaseSchemaManager
 from query_tree_manager import QueryTreeManager

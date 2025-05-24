@@ -4,10 +4,10 @@ Simple test runner for the MAC-SQL workflow v2 test suite.
 Runs tests from the tests directory with proper path setup.
 """
 
-import sys
-import os
-import subprocess
-from pathlib import Path
+import src.sys as sys
+import src.os as os
+import src.subprocess as subprocess
+from src.pathlib import Path
 
 # Add parent directory to Python path so tests can import modules
 parent_dir = Path(__file__).parent.parent
