@@ -25,3 +25,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development Environment
 - Get API key by adding this command "source ../.env && export OPENAI_API_KEY"
+
+## Runtime Assumptions
+- Assume the Jupyter notebook server is always running

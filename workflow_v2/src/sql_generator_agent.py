@@ -20,7 +20,7 @@ from memory_content_types import (
     QueryNode, QueryMapping, NodeStatus, ExecutionResult,
     CombineStrategy, CombineStrategyType
 )
-from workflow_utils import extract_sql_from_text
+from utils import extract_sql_from_text
 
 
 class SQLGeneratorAgent(BaseMemoryAgent):

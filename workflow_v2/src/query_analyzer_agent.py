@@ -84,7 +84,12 @@ Output your analysis in this XML format:
   </decomposition>
 </analysis>
 
-For simple queries, omit the decomposition section."""
+For simple queries, omit the decomposition section.
+
+IMPORTANT: After your analysis, include this at the end of your response:
+<node_info>
+The query tree has been created. The root node ID will be logged and should be used for subsequent agent calls.
+</node_info>"""
     
     async def _reader_callback(self, memory: KeyValueMemory, task: str, cancellation_token) -> Dict[str, Any]:
         """Read context from memory before analyzing the query"""
@@ -132,10 +137,32 @@ For simple queries, omit the decomposition section."""
                 if analysis.get("complexity") == "complex" and "decomposition" in analysis:
                     await self._create_subquery_nodes(root_id, analysis["decomposition"])
                 
-                # Store the analysis result
+                # Store the analysis result with node ID
+                analysis["root_node_id"] = root_id
                 await memory.set("query_analysis", analysis)
                 
-                self.logger.info(f"Query analysis completed. Complexity: {analysis.get('complexity')}")
+                # Set current node based on complexity
+                if analysis.get("complexity") == "simple":
+                    # Simple query: current node is the root
+                    await memory.set("current_node_id", root_id)
+                    self.logger.info(f"Simple query - set root {root_id} as current node")
+                else:
+                    # Complex query: current node is the first child
+                    tree = await self.tree_manager.get_tree()
+                    if tree and "nodes" in tree and root_id in tree["nodes"]:
+                        root_data = tree["nodes"][root_id]
+                        # Get children IDs after they've been created
+                        children = await self.tree_manager.get_children(root_id)
+                        if children and len(children) > 0:
+                            first_child_id = children[0].nodeId
+                            await memory.set("current_node_id", first_child_id)
+                            self.logger.info(f"Complex query - set first child {first_child_id} as current node")
+                        else:
+                            # Fallback to root if no children
+                            await memory.set("current_node_id", root_id)
+                            self.logger.warning(f"Complex query but no children found - set root as current")
+                
+                self.logger.info(f"Query analysis completed. Complexity: {analysis.get('complexity')}. Root node: {root_id}")
                 
         except Exception as e:
             self.logger.error(f"Error parsing analysis results: {str(e)}", exc_info=True)

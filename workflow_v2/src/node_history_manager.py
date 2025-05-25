@@ -355,6 +355,16 @@ class NodeHistoryManager:
         return [op for op in all_operations 
                 if start_time <= op.timestamp <= end_time]
     
+    async def get_all(self) -> List[Dict[str, Any]]:
+        """
+        Get all operations in the history as raw dictionaries.
+        
+        Returns:
+            List of all operations as dictionaries
+        """
+        history = await self.memory.get("nodeHistory")
+        return history if history else []
+    
     async def get_history_summary(self) -> Dict[str, Any]:
         """
         Get a summary of the operation history.

@@ -597,3 +597,54 @@ def eval_hardness(sql):
         return "hard"
     else:
         return "extra"
+
+
+def extract_sql_from_text(text: str) -> str:
+    """
+    Extract SQL query from text.
+    
+    Args:
+        text: Text that might contain SQL
+        
+    Returns:
+        Extracted SQL query or empty string if no SQL found
+    """
+    import re
+    
+    try:
+        # Try to extract SQL from JSON
+        data = parse_json(text)
+        if 'sql' in data:
+            return data['sql']
+        if 'final_sql' in data:
+            return data['final_sql']
+            
+        # Try to extract SQL with regex patterns
+        sql_patterns = [
+            r'```sql\s*(.*?)\s*```',  # SQL in code blocks
+            r'```\s*SELECT.*?```',    # SELECT in generic code blocks
+            r'SELECT.*?(?:;|$)',      # Simple SELECT statements
+            r'WITH.*?(?:;|$)',        # WITH queries
+        ]
+        
+        for pattern in sql_patterns:
+            matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
+            if matches:
+                # Clean up the matched SQL
+                sql = matches[0].strip()
+                # Remove any trailing backticks or spaces
+                if sql.endswith('```'):
+                    sql = sql[:sql.rfind('```')].strip()
+                return sql
+        
+        # If no clear SQL pattern, look for any content between backticks
+        code_block_pattern = r'```(.*?)```'
+        code_blocks = re.findall(code_block_pattern, text, re.DOTALL)
+        for block in code_blocks:
+            if 'SELECT' in block.upper() or 'WITH' in block.upper():
+                return block.strip()
+                
+        return ""
+    except Exception as e:
+        print(f"Error extracting SQL: {str(e)}")
+        return ""

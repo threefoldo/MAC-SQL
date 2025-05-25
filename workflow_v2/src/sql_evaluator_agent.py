@@ -89,8 +89,12 @@ Be constructive and specific in your analysis."""
                 node_id = parts[0][5:]
         
         if not node_id:
-            self.logger.error("No node_id found in task. Task must be in format 'node:{node_id} - ...'")
-            return context
+            # Try to get current node from memory
+            node_id = await memory.get("current_node_id")
+            if not node_id:
+                self.logger.error("No node_id found in task or memory. Task must be in format 'node:{node_id} - ...' or current_node_id must be set")
+                return context
+            self.logger.info(f"Using current node from memory: {node_id}")
         
         # Get the node
         node = await self.tree_manager.get_node(node_id)
@@ -220,6 +224,12 @@ Be constructive and specific in your analysis."""
                     # the SQL execution had errors, not based on the quality of results
                     
                     self.logger.info(f"Stored analysis for node {node_id} - Answers intent: {evaluation_result.get('answers_intent')}, Quality: {evaluation_result.get('result_quality')}")
+                    
+                    # Handle node progression based on quality
+                    if evaluation_result.get("result_quality") in ["excellent", "good"]:
+                        await self._handle_node_progression(memory, node_id)
+                    else:
+                        self.logger.info(f"Node {node_id} needs improvement - staying on current node")
                 
                 self.logger.info(f"Analysis complete - Answers intent: {evaluation_result.get('answers_intent')}, Quality: {evaluation_result.get('result_quality')}")
                 
@@ -227,6 +237,88 @@ Be constructive and specific in your analysis."""
             self.logger.error(f"Error parsing evaluation results: {str(e)}", exc_info=True)
             # Store raw analysis
             await memory.set("execution_analysis_raw", last_message)
+    
+    async def _handle_node_progression(self, memory: KeyValueMemory, current_node_id: str) -> None:
+        """
+        Handle node progression after a successful evaluation.
+        
+        Rules:
+        1. If current node has siblings, move to next sibling
+        2. If no more siblings, move to parent
+        3. If all children of parent are good, parent becomes current
+        4. If at root and all descendants are good, workflow is complete
+        """
+        try:
+            tree = await self.tree_manager.get_tree()
+            if not tree or "nodes" not in tree:
+                return
+            
+            nodes = tree["nodes"]
+            current_node = nodes.get(current_node_id)
+            if not current_node:
+                return
+            
+            # Find parent and siblings
+            parent_id = current_node.get("parent")
+            if not parent_id:
+                # This is the root node - check if all children are good
+                if await self._all_children_good(nodes, current_node_id):
+                    self.logger.info(f"Root node {current_node_id} and all descendants are good - workflow complete")
+                    await memory.set("workflow_complete", True)
+                return
+            
+            parent_node = nodes.get(parent_id)
+            if not parent_node or "children" not in parent_node:
+                return
+            
+            siblings = parent_node["children"]
+            current_index = siblings.index(current_node_id) if current_node_id in siblings else -1
+            
+            # Check for next sibling
+            if current_index >= 0 and current_index < len(siblings) - 1:
+                next_node_id = siblings[current_index + 1]
+                await memory.set("current_node_id", next_node_id)
+                self.logger.info(f"Moving to next sibling: {next_node_id}")
+            else:
+                # No more siblings - check if all siblings are good
+                if await self._all_children_good(nodes, parent_id):
+                    # All children are good - move to parent
+                    await memory.set("current_node_id", parent_id)
+                    self.logger.info(f"All children of {parent_id} are good - moving to parent")
+                    
+                    # Check if parent is root and workflow is complete
+                    if not nodes[parent_id].get("parent"):
+                        self.logger.info(f"Parent {parent_id} is root - workflow complete")
+                        await memory.set("workflow_complete", True)
+                else:
+                    self.logger.info(f"Not all siblings are good yet - staying on {current_node_id}")
+                    
+        except Exception as e:
+            self.logger.error(f"Error in node progression: {str(e)}", exc_info=True)
+    
+    async def _all_children_good(self, nodes: Dict[str, Any], parent_id: str) -> bool:
+        """Check if all children of a node have good quality evaluation."""
+        parent_node = nodes.get(parent_id)
+        if not parent_node:
+            return False
+        
+        children_ids = parent_node.get("children", [])
+        if not children_ids:
+            # No children - check the node itself
+            analysis_key = f"node_{parent_id}_analysis"
+            analysis = await self.memory.get(analysis_key)
+            if analysis:
+                return analysis.get("result_quality") in ["excellent", "good"]
+            return False
+        
+        # Check all children
+        for child_id in children_ids:
+            analysis_key = f"node_{child_id}_analysis"
+            analysis = await self.memory.get(analysis_key)
+            if not analysis or analysis.get("result_quality") not in ["excellent", "good"]:
+                return False
+        
+        return True
     
     def _extract_code_block(self, content: str, language: str = "") -> Optional[str]:
         """
