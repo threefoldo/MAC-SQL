@@ -145,7 +145,7 @@ The query tree has been created. The root node ID will be logged and should be u
                 if analysis.get("complexity") == "simple":
                     # Simple query: current node is the root
                     await memory.set("current_node_id", root_id)
-                    self.logger.info(f"Simple query - set root {root_id} as current node")
+                    self.logger.debug(f"Simple query - set root {root_id} as current node")
                 else:
                     # Complex query: current node is the first child
                     tree = await self.tree_manager.get_tree()
@@ -156,13 +156,27 @@ The query tree has been created. The root node ID will be logged and should be u
                         if children and len(children) > 0:
                             first_child_id = children[0].nodeId
                             await memory.set("current_node_id", first_child_id)
-                            self.logger.info(f"Complex query - set first child {first_child_id} as current node")
+                            self.logger.debug(f"Complex query - set first child {first_child_id} as current node")
                         else:
                             # Fallback to root if no children
                             await memory.set("current_node_id", root_id)
-                            self.logger.warning(f"Complex query but no children found - set root as current")
+                            self.logger.debug(f"Complex query but no children found - set root as current")
                 
-                self.logger.info(f"Query analysis completed. Complexity: {analysis.get('complexity')}. Root node: {root_id}")
+                # User-friendly logging
+                self.logger.info("="*60)
+                self.logger.info("Query Analysis")
+                self.logger.info(f"Query: {task}")
+                self.logger.info(f"Intent: {analysis.get('intent')}")
+                self.logger.info(f"Complexity: {analysis.get('complexity').upper()}")
+                
+                if analysis.get('complexity') == 'complex' and 'decomposition' in analysis:
+                    self.logger.info(f"Decomposed into {len(analysis['decomposition'].get('subqueries', []))} sub-queries:")
+                    for sq in analysis['decomposition'].get('subqueries', []):
+                        self.logger.info(f"  - {sq['intent']}")
+                    self.logger.info(f"Combination strategy: {analysis['decomposition'].get('combination', {}).get('strategy', 'N/A').upper()}")
+                
+                self.logger.info("="*60)
+                self.logger.debug(f"Root node ID: {root_id}")
                 
         except Exception as e:
             self.logger.error(f"Error parsing analysis results: {str(e)}", exc_info=True)

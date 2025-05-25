@@ -11,6 +11,7 @@ import re
 import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional, Any, Set
 from datetime import datetime
+import json
 
 from keyvalue_memory import KeyValueMemory
 from base_memory_agent import BaseMemoryAgent
@@ -51,11 +52,24 @@ class SchemaLinkerAgent(BaseMemoryAgent):
 3. Identify join relationships between selected tables
 4. Map schema elements to their purpose in the query
 
-Consider:
-- Be minimal: only include what's absolutely necessary
+When analyzing, consider:
+- The current node's intent and complexity
+- Any existing mapping, SQL, or errors from previous attempts
+- Parent node context (if this is a sub-query)
+- Sibling nodes (if they exist) to ensure consistency
+- Recent errors and revisions to avoid repeating mistakes
+
+Be minimal but complete:
+- Only include tables and columns that are absolutely necessary
 - Think about implicit requirements (e.g., joins need key columns)
 - Use sample data to verify your selections make sense
 - Consider data types and constraints
+- Learn from any previous errors on this node
+
+If this is a revision (existing_mapping or recent_errors present):
+- Understand what went wrong in the previous attempt
+- Fix the specific issues while keeping what worked
+- Explain what you're changing and why
 
 Output your analysis in this XML format:
 
@@ -88,41 +102,52 @@ Output your analysis in this XML format:
     
     async def _reader_callback(self, memory: KeyValueMemory, task: str, cancellation_token) -> Dict[str, Any]:
         """Read context from memory before schema linking"""
-        context = {}
+        # Get current_node_id from QueryTreeManager
+        current_node_id = await self.tree_manager.get_current_node_id()
+        if not current_node_id:
+            return {"error": "No current_node_id found"}
         
-        # Extract node_id from task if provided
-        node_id = None
-        if "node:" in task:
-            # Task format: "node:node_id - actual task"
-            parts = task.split(" - ", 1)
-            if parts[0].startswith("node:"):
-                node_id = parts[0][5:]
-                task = parts[1] if len(parts) > 1 else task
+        self.logger.debug(f"Using current_node_id: {current_node_id}")
         
-        # If no node_id in task, check if there's a current node
-        if not node_id:
-            current_node_id = await memory.get("current_node_id")
-            if current_node_id:
-                node_id = current_node_id
+        # Get the node from QueryTreeManager
+        node = await self.tree_manager.get_node(current_node_id)
+        if not node:
+            return {"error": f"Node {current_node_id} not found"}
         
-        if node_id:
-            # Get the node
-            node = await self.tree_manager.get_node(node_id)
-            if node:
-                context["node_id"] = node_id
-                context["intent"] = node.intent
-            else:
-                self.logger.warning(f"Node {node_id} not found")
-                context["intent"] = task
-        else:
-            # No node context, use the task as intent
-            context["intent"] = task
+        # Convert entire node to dictionary for simple string representation
+        node_dict = node.to_dict()
         
-        # Get full schema with sample data
-        schema_xml = await self._get_full_schema_xml()
-        context["full_schema"] = schema_xml
+        # Get parent node if exists
+        parent_info = None
+        if node.parentId:
+            parent_node = await self.tree_manager.get_node(node.parentId)
+            if parent_node:
+                parent_info = parent_node.to_dict()
         
-        self.logger.debug(f"Schema linking context prepared for intent: {context.get('intent', '')[:100]}...")
+        # Get sibling nodes if exists
+        siblings_info = []
+        if node.parentId:
+            siblings = await self.tree_manager.get_children(node.parentId)
+            siblings_info = [s.to_dict() for s in siblings if s.nodeId != current_node_id]
+        
+        # Get node operation history
+        history = await self.history_manager.get_node_operations(current_node_id)
+        # Convert NodeOperation objects to dictionaries
+        history_dicts = [op.to_dict() for op in history] if history else []
+        
+        # Build context with all node information as a single string
+        context = {
+            "current_node": json.dumps(node_dict, indent=2),
+            "parent_node": json.dumps(parent_info, indent=2) if parent_info else None,
+            "sibling_nodes": json.dumps(siblings_info, indent=2) if siblings_info else None,
+            "node_history": json.dumps(history_dicts[-5:], indent=2) if history_dicts else None,  # Last 5 operations
+            "full_schema": await self._get_full_schema_xml()
+        }
+        
+        # Remove None values
+        context = {k: v for k, v in context.items() if v is not None}
+        
+        self.logger.debug(f"Schema linking context prepared for node: {current_node_id}")
         
         return context
     
@@ -142,15 +167,8 @@ Output your analysis in this XML format:
                 # Create mapping from the linking result
                 mapping = await self._create_mapping_from_linking(linking_result)
                 
-                # Get the node ID to update
-                node_id = None
-                if "node:" in task:
-                    parts = task.split(" - ", 1)
-                    if parts[0].startswith("node:"):
-                        node_id = parts[0][5:]
-                
-                if not node_id:
-                    node_id = await memory.get("current_node_id")
+                # Get the current node ID from QueryTreeManager
+                node_id = await self.tree_manager.get_current_node_id()
                 
                 if node_id:
                     # Update the node with the mapping
@@ -162,11 +180,48 @@ Output your analysis in this XML format:
                         new_mapping=mapping
                     )
                     
-                    self.logger.info(f"Updated node {node_id} with schema mapping")
+                    # User-friendly logging
+                    self.logger.info("="*60)
+                    self.logger.info("Schema Linking")
+                    
+                    # Get node for intent
+                    node = await self.tree_manager.get_node(node_id)
+                    if node:
+                        self.logger.info(f"Query intent: {node.intent}")
+                    
+                    # Log linked tables
+                    if mapping.tables:
+                        self.logger.info(f"Linked {len(mapping.tables)} table(s):")
+                        for table in mapping.tables:
+                            self.logger.info(f"  - {table.name}: {table.purpose}")
+                    
+                    # Log selected columns
+                    if mapping.columns:
+                        self.logger.info(f"Selected {len(mapping.columns)} column(s):")
+                        # Group columns by table
+                        cols_by_table = {}
+                        for col in mapping.columns:
+                            if col.table not in cols_by_table:
+                                cols_by_table[col.table] = []
+                            cols_by_table[col.table].append(col)
+                        
+                        for table, cols in cols_by_table.items():
+                            self.logger.info(f"  From {table}:")
+                            for col in cols:
+                                self.logger.info(f"    - {col.column} (used for: {col.usedFor})")
+                    
+                    # Log joins
+                    if mapping.joins:
+                        self.logger.info(f"Identified {len(mapping.joins)} join(s):")
+                        for join in mapping.joins:
+                            self.logger.info(f"  - {join.from_table} -> {join.to}: {join.on}")
+                    
+                    self.logger.info("="*60)
+                    self.logger.debug(f"Updated node {node_id} with schema mapping")
                 else:
                     # Store mapping in memory for other uses
                     await memory.set("last_schema_mapping", mapping.to_dict())
-                    self.logger.info("Stored schema mapping in memory")
+                    self.logger.debug("Stored schema mapping in memory")
                 
         except Exception as e:
             self.logger.error(f"Error parsing schema linking results: {str(e)}", exc_info=True)
@@ -344,18 +399,18 @@ Output your analysis in this XML format:
         Returns:
             The created QueryMapping or None if failed
         """
-        self.logger.info(f"Linking schema for node: {node_id}")
+        self.logger.debug(f"Linking schema for node: {node_id}")
         
-        # Store the node ID in memory for the callbacks
-        await self.memory.set("current_node_id", node_id)
+        # Set the current node in QueryTreeManager
+        await self.tree_manager.set_current_node_id(node_id)
         
-        # Run the agent with node context
-        task = f"node:{node_id} - Link schema for this query node"
+        # Run the agent
+        task = "Link schema for the current query node"
         result = await self.run(task)
         
-        # Get the mapping from memory
-        mapping_dict = await self.memory.get("last_schema_mapping")
-        if mapping_dict:
-            return QueryMapping.from_dict(mapping_dict)
+        # Get the node to check if it has mapping
+        node = await self.tree_manager.get_node(node_id)
+        if node and node.mapping:
+            return node.mapping
         
         return None

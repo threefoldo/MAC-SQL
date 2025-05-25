@@ -171,7 +171,10 @@ Always check tree status after major operations.
         Returns:
             Analysis result with tree structure
         """
-        self.logger.info(f"Analyzing query: {query}")
+        self.logger.info("\n" + "*"*60)
+        self.logger.info("Starting Text-to-SQL Workflow")
+        self.logger.info(f"User Query: {query}")
+        self.logger.info("*"*60)
         
         result = await self.query_analyzer.analyze(query)
         
@@ -195,7 +198,7 @@ Always check tree status after major operations.
         Returns:
             Linking result
         """
-        self.logger.info(f"Linking schema for node: {node_id}")
+        self.logger.debug(f"Linking schema for node: {node_id}")
         
         result = await self.schema_linker.link_schema(node_id)
         
@@ -225,7 +228,7 @@ Always check tree status after major operations.
         Returns:
             Generation result
         """
-        self.logger.info(f"Generating SQL for node: {node_id}")
+        self.logger.debug(f"Generating SQL for node: {node_id}")
         
         result = await self.sql_generator.generate_sql(node_id)
         
@@ -254,7 +257,7 @@ Always check tree status after major operations.
         Returns:
             Execution and evaluation result
         """
-        self.logger.info(f"Executing SQL for node: {node_id}")
+        self.logger.debug(f"Executing SQL for node: {node_id}")
         
         result = await self.sql_evaluator_agent.execute_and_evaluate(node_id)
         
@@ -418,7 +421,7 @@ Always check tree status after major operations.
         Args:
             db_id: The database ID to load schema for
         """
-        self.logger.info(f"Initializing schema for database: {db_id}")
+        self.logger.info(f"Loading database schema: {db_id}")
         
         # Get schema from schema reader
         schema_xml, fk_infos, schema_dict = self.schema_reader.generate_schema_description(
@@ -434,7 +437,7 @@ Always check tree status after major operations.
         # Convert and store each table
         for table_name, columns_info in db_info["desc_dict"].items():
             # This is a simplified conversion - you may need to enhance based on actual format
-            self.logger.info(f"Loading table: {table_name}")
+            self.logger.debug(f"Loading table: {table_name}")
             # The actual implementation would convert the schema reader format
             # to TableSchema objects and store them using schema_manager
     

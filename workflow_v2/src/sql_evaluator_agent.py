@@ -138,7 +138,7 @@ Be constructive and specific in your analysis."""
                     self.logger.warning("No data_path in database schema metadata, using default")
                     data_path = "/home/norman/work/text-to-sql/MAC-SQL/data/bird"
                 
-                self.logger.info(f"Executing SQL for node {node_id} on database {db_name}")
+                self.logger.debug(f"Executing SQL for node {node_id} on database {db_name}")
                 self.logger.debug(f"Using data_path: {data_path}, dataset_name: {dataset_name}")
                 
                 executor = SQLExecutor(data_path, dataset_name)
@@ -223,15 +223,66 @@ Be constructive and specific in your analysis."""
                     # The status (EXECUTED_SUCCESS or EXECUTED_FAILED) is set based on whether
                     # the SQL execution had errors, not based on the quality of results
                     
-                    self.logger.info(f"Stored analysis for node {node_id} - Answers intent: {evaluation_result.get('answers_intent')}, Quality: {evaluation_result.get('result_quality')}")
+                    # User-friendly logging
+                    self.logger.info("="*60)
+                    self.logger.info("SQL Execution & Evaluation")
+                    
+                    # Get node for intent
+                    node = await self.tree_manager.get_node(node_id)
+                    if node:
+                        self.logger.info(f"Query intent: {node.intent}")
+                    
+                    # Log execution status
+                    exec_result = await memory.get("execution_result")
+                    if exec_result:
+                        if exec_result.get("status") == "success":
+                            self.logger.info(f"✓ SQL executed successfully")
+                            self.logger.info(f"  Returned {exec_result.get('row_count', 0)} row(s)")
+                            # Show sample of results
+                            if exec_result.get('data') and len(exec_result['data']) > 0:
+                                self.logger.info("  Sample results:")
+                                # Show first 3 rows
+                                for i, row in enumerate(exec_result['data'][:3]):
+                                    if i == 0 and exec_result.get('columns'):
+                                        # Show column headers
+                                        self.logger.info(f"    {' | '.join(str(col) for col in exec_result['columns'])}")
+                                    self.logger.info(f"    {' | '.join(str(val) for val in row)}")
+                                if len(exec_result['data']) > 3:
+                                    self.logger.info(f"    ... and {len(exec_result['data']) - 3} more row(s)")
+                        else:
+                            self.logger.info(f"✗ SQL execution failed: {exec_result.get('error', 'Unknown error')}")
+                    
+                    # Log evaluation results
+                    self.logger.info(f"Evaluation results:")
+                    self.logger.info(f"  - Answers intent: {evaluation_result.get('answers_intent', 'N/A').upper()}")
+                    self.logger.info(f"  - Result quality: {evaluation_result.get('result_quality', 'N/A').upper()}")
+                    self.logger.info(f"  - Confidence: {evaluation_result.get('confidence_score', 'N/A')}")
+                    
+                    if evaluation_result.get('result_summary'):
+                        self.logger.info(f"  - Summary: {evaluation_result['result_summary']}")
+                    
+                    # Log issues if any
+                    issues = evaluation_result.get('issues', [])
+                    if issues:
+                        self.logger.info(f"  Issues found:")
+                        for issue in issues:
+                            self.logger.info(f"    - [{issue.get('severity', 'N/A').upper()}] {issue.get('description', 'N/A')}")
+                    
+                    self.logger.info("="*60)
+                    self.logger.debug(f"Stored analysis for node {node_id}")
                     
                     # Handle node progression based on quality
-                    if evaluation_result.get("result_quality") in ["excellent", "good"]:
+                    quality = evaluation_result.get("result_quality", "").lower()
+                    if quality in ["excellent", "good"]:
                         await self._handle_node_progression(memory, node_id)
                     else:
-                        self.logger.info(f"Node {node_id} needs improvement - staying on current node")
+                        # Make it clear that the node needs improvement
+                        self.logger.info("="*60)
+                        self.logger.info(f"⚠️  NODE NEEDS IMPROVEMENT - Quality: {quality.upper()}")
+                        self.logger.info("Coordinator should retry with fixes for the issues identified above")
+                        self.logger.info("="*60)
                 
-                self.logger.info(f"Analysis complete - Answers intent: {evaluation_result.get('answers_intent')}, Quality: {evaluation_result.get('result_quality')}")
+                self.logger.debug(f"Analysis complete - Answers intent: {evaluation_result.get('answers_intent')}, Quality: {evaluation_result.get('result_quality')}")
                 
         except Exception as e:
             self.logger.error(f"Error parsing evaluation results: {str(e)}", exc_info=True)
@@ -263,8 +314,16 @@ Be constructive and specific in your analysis."""
             if not parent_id:
                 # This is the root node - check if all children are good
                 if await self._all_children_good(nodes, current_node_id):
-                    self.logger.info(f"Root node {current_node_id} and all descendants are good - workflow complete")
+                    self.logger.info("="*60)
+                    self.logger.info("✅ WORKFLOW COMPLETE: Root node and all descendants have good SQL!")
+                    self.logger.info("All queries in the tree have been successfully executed.")
+                    self.logger.info("="*60)
                     await memory.set("workflow_complete", True)
+                else:
+                    self.logger.info("="*60) 
+                    self.logger.info("⚠️  Root node processed but some children still need work")
+                    self.logger.info("Coordinator should continue processing remaining nodes")
+                    self.logger.info("="*60)
                 return
             
             parent_node = nodes.get(parent_id)
@@ -278,20 +337,24 @@ Be constructive and specific in your analysis."""
             if current_index >= 0 and current_index < len(siblings) - 1:
                 next_node_id = siblings[current_index + 1]
                 await memory.set("current_node_id", next_node_id)
-                self.logger.info(f"Moving to next sibling: {next_node_id}")
+                self.logger.debug(f"Moving to next sibling: {next_node_id}")
             else:
                 # No more siblings - check if all siblings are good
                 if await self._all_children_good(nodes, parent_id):
                     # All children are good - move to parent
                     await memory.set("current_node_id", parent_id)
-                    self.logger.info(f"All children of {parent_id} are good - moving to parent")
+                    self.logger.debug(f"All children of {parent_id} are good - moving to parent")
                     
                     # Check if parent is root and workflow is complete
                     if not nodes[parent_id].get("parent"):
-                        self.logger.info(f"Parent {parent_id} is root - workflow complete")
+                        self.logger.info("="*60)
+                        self.logger.info("✅ WORKFLOW COMPLETE: All sub-queries executed and parent query ready!")
+                        self.logger.info("All nodes in the query tree have good SQL results.")
+                        self.logger.info("Parent node can now combine results from all children.")
+                        self.logger.info("="*60)
                         await memory.set("workflow_complete", True)
                 else:
-                    self.logger.info(f"Not all siblings are good yet - staying on {current_node_id}")
+                    self.logger.debug(f"Not all siblings are good yet - staying on {current_node_id}")
                     
         except Exception as e:
             self.logger.error(f"Error in node progression: {str(e)}", exc_info=True)
