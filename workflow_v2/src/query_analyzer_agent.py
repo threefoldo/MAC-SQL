@@ -98,9 +98,9 @@ For simple queries, omit the decomposition section."""
         context["schema"] = schema_xml
         
         # Get any existing task context
-        task_context = await self.task_manager.get_current_context()
+        task_context = await self.task_manager.get()
         if task_context:
-            context["database_id"] = task_context.database_id
+            context["database_id"] = task_context.databaseName
         
         self.logger.debug(f"Query analyzer context prepared with schema length: {len(schema_xml)}")
         

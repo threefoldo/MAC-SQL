@@ -25,7 +25,7 @@ from node_history_manager import NodeHistoryManager
 from schema_reader import SchemaReader
 
 from query_analyzer_agent import QueryAnalyzerAgent
-from schema_linking_agent import SchemaLinkingAgent
+from schema_linker_agent import SchemaLinkerAgent
 from sql_generator_agent import SQLGeneratorAgent
 from sql_evaluator_agent import SQLEvaluatorAgent
 from sql_executor import SQLExecutor
@@ -76,7 +76,7 @@ class OrchestratorAgent:
         
         # Initialize agents
         self.query_analyzer = QueryAnalyzerAgent(memory, model_name, debug)
-        self.schema_linker = SchemaLinkingAgent(memory, model_name, debug)
+        self.schema_linker = SchemaLinkerAgent(memory, model_name, debug)
         self.sql_generator = SQLGeneratorAgent(memory, model_name, debug)
         self.sql_evaluator_agent = SQLEvaluatorAgent(memory, sql_executor, model_name, debug)
         

@@ -26,7 +26,7 @@ from query_tree_manager import QueryTreeManager
 from database_schema_manager import DatabaseSchemaManager
 from node_history_manager import NodeHistoryManager
 from query_analyzer_agent import QueryAnalyzerAgent
-from schema_linking_agent import SchemaLinkingAgent
+from schema_linker_agent import SchemaLinkerAgent
 from sql_generator_agent import SQLGeneratorAgent
 from sql_evaluator_agent import SQLEvaluatorAgent
 

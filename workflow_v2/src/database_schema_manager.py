@@ -25,9 +25,17 @@ class DatabaseSchemaManager:
         self.memory = memory
         self.logger = logging.getLogger(self.__class__.__name__)
     
-    async def initialize(self) -> None:
-        """Initialize an empty database schema."""
-        await self.memory.set("databaseSchema", {"tables": {}})
+    async def initialize(self, metadata: Optional[Dict[str, Any]] = None) -> None:
+        """Initialize an empty database schema.
+        
+        Args:
+            metadata: Optional metadata including data_path and dataset_name
+        """
+        schema = {
+            "tables": {},
+            "metadata": metadata or {}
+        }
+        await self.memory.set("databaseSchema", schema)
         self.logger.info("Initialized empty database schema")
     
     async def add_table(self, table_schema: TableSchema) -> None:
@@ -311,8 +319,13 @@ class DatabaseSchemaManager:
             schema_reader: The SchemaReader instance with loaded database information
             db_id: The database ID to load
         """
-        # Initialize empty schema first
-        await self.initialize()
+        # Initialize schema with metadata
+        metadata = {
+            "data_path": schema_reader.data_path,
+            "dataset_name": schema_reader.dataset_name,
+            "database_id": db_id
+        }
+        await self.initialize(metadata)
         
         # Load database info if not already loaded
         if db_id not in schema_reader.db2infos:

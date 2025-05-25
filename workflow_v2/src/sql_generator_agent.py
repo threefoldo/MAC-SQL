@@ -182,11 +182,9 @@ Return the SQL wrapped in the XML format above."""
                     await self.tree_manager.update_node_sql(node_id, sql)
                     
                     # Record in history
-                    await self.history_manager.record_update(
+                    await self.history_manager.record_generate_sql(
                         node_id=node_id,
-                        field="sql",
-                        old_value=None,
-                        new_value=sql
+                        sql=sql
                     )
                     
                     self.logger.info(f"Updated node {node_id} with generated SQL")
@@ -222,7 +220,7 @@ Return the SQL wrapped in the XML format above."""
         if mapping.joins:
             lines.append("\nJoins:")
             for join in mapping.joins:
-                lines.append(f"  - {join.from_table} → {join.to}: {join.on} ({join.type})")
+                lines.append(f"  - {join.from_table} → {join.to}: {join.on}")
         
         return "\n".join(lines)
     
@@ -230,8 +228,8 @@ Return the SQL wrapped in the XML format above."""
         """Parse the SQL generation XML output"""
         try:
             # Extract XML
-            xml_content = MemoryCallbackHelpers.extract_xml_content(output, "sql_generation")
-            if not xml_content:
+            xml_match = re.search(r'<sql_generation>.*?</sql_generation>', output, re.DOTALL)
+            if not xml_match:
                 # Try code block
                 xml_match = re.search(r'```xml\s*\n(.*?)\n```', output, re.DOTALL)
                 if xml_match:
@@ -247,6 +245,8 @@ Return the SQL wrapped in the XML format above."""
                             "considerations": ""
                         }
                     return None
+            else:
+                xml_content = xml_match.group()
             
             # Parse XML
             root = ET.fromstring(xml_content)

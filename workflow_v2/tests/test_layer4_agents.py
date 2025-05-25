@@ -21,7 +21,7 @@ from query_tree_manager import QueryTreeManager
 from node_history_manager import NodeHistoryManager
 
 from query_analyzer_agent import QueryAnalyzerAgent
-from schema_linking_agent import SchemaLinkingAgent
+from schema_linker_agent import SchemaLinkerAgent
 from sql_generator_agent import SQLGeneratorAgent
 from sql_evaluator_agent import SQLEvaluatorAgent
 from sql_executor import SQLExecutor
@@ -232,7 +232,7 @@ class TestQueryAnalyzerAgent:
         print("✅ Complex query decomposition test passed")
 
 
-class TestSchemaLinkingAgent:
+class TestSchemaLinkerAgent:
     """Test schema linking agent."""
     
     async def test_simple_table_linking(self):
@@ -577,8 +577,8 @@ async def run_all_tests():
     await analyzer_tester.test_complex_query_decomposition()
     
     # Test Schema Linking Agent
-    print("\n--- Testing SchemaLinkingAgent ---")
-    linker_tester = TestSchemaLinkingAgent()
+    print("\n--- Testing SchemaLinkerAgent ---")
+    linker_tester = TestSchemaLinkerAgent()
     await linker_tester.test_simple_table_linking()
     await linker_tester.test_join_relationship_detection()
     

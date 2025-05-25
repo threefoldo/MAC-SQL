@@ -1,0 +1,373 @@
+"""
+Test cases for SchemaLinkerAgent using real LLM and BIRD dataset.
+
+Tests the actual run method and internal implementation.
+"""
+
+import asyncio
+import pytest
+import os
+from pathlib import Path
+import sys
+import logging
+
+# Add parent directory to path for imports
+sys.path.append(str(Path(__file__).parent.parent / 'src'))
+
+from keyvalue_memory import KeyValueMemory
+from memory_content_types import (
+    TaskContext, QueryNode, NodeStatus, TaskStatus,
+    QueryMapping, TableMapping, ColumnMapping, JoinMapping,
+    TableSchema, ColumnInfo
+)
+from task_context_manager import TaskContextManager
+from query_tree_manager import QueryTreeManager
+from database_schema_manager import DatabaseSchemaManager
+from node_history_manager import NodeHistoryManager
+from schema_linker_agent import SchemaLinkerAgent
+from schema_reader import SchemaReader
+
+
+class TestSchemaLinkerAgent:
+    """Test cases for SchemaLinkerAgent"""
+    
+    async def setup_test_environment(self, query: str, task_id: str, node_intent: str, db_name: str = "california_schools"):
+        """Setup test environment with schema loaded and query tree initialized"""
+        memory = KeyValueMemory()
+        
+        # Initialize task
+        task_manager = TaskContextManager(memory)
+        await task_manager.initialize(task_id, query, db_name)
+        
+        # Load schema
+        schema_manager = DatabaseSchemaManager(memory)
+        await schema_manager.initialize()
+        
+        # Load real schema from BIRD dataset
+        data_path = "/home/norman/work/text-to-sql/MAC-SQL/data/bird"
+        tables_json_path = Path(data_path) / "dev_tables.json"
+        
+        if tables_json_path.exists():
+            schema_reader = SchemaReader(
+                data_path=data_path,
+                tables_json_path=str(tables_json_path),
+                dataset_name="bird",
+                lazy=False
+            )
+            await schema_manager.load_from_schema_reader(schema_reader, db_name)
+        else:
+            # Fallback to manual schema for testing
+            await self._setup_manual_schema(schema_manager)
+        
+        # Initialize query tree with node
+        tree_manager = QueryTreeManager(memory)
+        node_id = await tree_manager.initialize(node_intent)
+        
+        return memory, node_id
+    
+    async def _setup_manual_schema(self, schema_manager: DatabaseSchemaManager):
+        """Setup basic test schema"""
+        # schools table
+        schools_schema = TableSchema(
+            name="schools",
+            columns={
+                "CDSCode": ColumnInfo(dataType="TEXT", nullable=False, isPrimaryKey=True, isForeignKey=False),
+                "School": ColumnInfo(dataType="TEXT", nullable=True, isPrimaryKey=False, isForeignKey=False),
+                "County": ColumnInfo(dataType="TEXT", nullable=True, isPrimaryKey=False, isForeignKey=False),
+                "City": ColumnInfo(dataType="TEXT", nullable=True, isPrimaryKey=False, isForeignKey=False),
+                "Zip": ColumnInfo(dataType="TEXT", nullable=True, isPrimaryKey=False, isForeignKey=False)
+            }
+        )
+        await schema_manager.add_table(schools_schema)
+        
+        # frpm table (Free/Reduced Price Meals)
+        frpm_schema = TableSchema(
+            name="frpm",
+            columns={
+                "CDSCode": ColumnInfo(dataType="TEXT", nullable=False, isPrimaryKey=True, isForeignKey=True,
+                                    references={"table": "schools", "column": "CDSCode"}),
+                "School Name": ColumnInfo(dataType="TEXT", nullable=True, isPrimaryKey=False, isForeignKey=False),
+                "Eligible Free Rate (K-12)": ColumnInfo(dataType="REAL", nullable=True, isPrimaryKey=False, isForeignKey=False),
+                "Free Meal Count (K-12)": ColumnInfo(dataType="INTEGER", nullable=True, isPrimaryKey=False, isForeignKey=False),
+                "Enrollment (K-12)": ColumnInfo(dataType="INTEGER", nullable=True, isPrimaryKey=False, isForeignKey=False),
+                "FRPM Count (K-12)": ColumnInfo(dataType="INTEGER", nullable=True, isPrimaryKey=False, isForeignKey=False)
+            }
+        )
+        await schema_manager.add_table(frpm_schema)
+        
+        # satscores table
+        satscores_schema = TableSchema(
+            name="satscores",
+            columns={
+                "cds": ColumnInfo(dataType="TEXT", nullable=False, isPrimaryKey=True, isForeignKey=True,
+                                references={"table": "schools", "column": "CDSCode"}),
+                "sname": ColumnInfo(dataType="TEXT", nullable=True, isPrimaryKey=False, isForeignKey=False),
+                "NumTstTakr": ColumnInfo(dataType="INTEGER", nullable=True, isPrimaryKey=False, isForeignKey=False),
+                "AvgScrRead": ColumnInfo(dataType="INTEGER", nullable=True, isPrimaryKey=False, isForeignKey=False),
+                "AvgScrMath": ColumnInfo(dataType="INTEGER", nullable=True, isPrimaryKey=False, isForeignKey=False)
+            }
+        )
+        await schema_manager.add_table(satscores_schema)
+    
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
+    async def test_run_simple_schema_linking(self):
+        """Test running the agent with a simple single-table query"""
+        query = "What is the highest eligible free rate for K-12 students in schools in Alameda County?"
+        node_intent = "Find the maximum eligible free rate for K-12 students in schools located in Alameda County"
+        memory, node_id = await self.setup_test_environment(query, "test_simple", node_intent)
+        
+        # Create schema linking agent
+        agent = SchemaLinkerAgent(memory, llm_config={
+            "model_name": "gpt-4o",
+            "temperature": 0.1,
+            "timeout": 60
+        }, debug=True)
+        
+        # Run the agent with the node ID
+        result = await agent.run(f"node:{node_id} - Link schema for this query node")
+        
+        # Verify the agent ran and returned a result
+        assert result is not None
+        assert hasattr(result, 'messages')
+        assert len(result.messages) > 0
+        
+        # Check that node was updated
+        tree_manager = QueryTreeManager(memory)
+        node = await tree_manager.get_node(node_id)
+        assert node is not None
+        assert node.mapping is not None
+        assert len(node.mapping.tables) > 0
+        
+        print(f"\nSimple Query Schema Linking:")
+        print(f"Tables: {[t.name for t in node.mapping.tables]}")
+        print(f"Columns: {[(c.table, c.column) for c in node.mapping.columns]}")
+        
+        # Verify the LLM response structure
+        last_message = result.messages[-1].content
+        assert "<schema_linking>" in last_message
+        assert "</schema_linking>" in last_message
+    
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
+    async def test_run_join_schema_linking(self):
+        """Test running the agent with a query requiring joins"""
+        query = "What are the SAT scores for schools with the highest free meal count?"
+        node_intent = "Find SAT scores for schools that have the highest free meal count"
+        memory, node_id = await self.setup_test_environment(query, "test_join", node_intent)
+        
+        # Create schema linking agent
+        agent = SchemaLinkerAgent(memory, llm_config={
+            "model_name": "gpt-4o",
+            "temperature": 0.1,
+            "timeout": 60
+        })
+        
+        # Run the agent
+        result = await agent.run(f"node:{node_id} - Link schema for this query node")
+        
+        # Verify result
+        assert result is not None
+        assert len(result.messages) > 0
+        
+        # Check node mapping
+        tree_manager = QueryTreeManager(memory)
+        node = await tree_manager.get_node(node_id)
+        assert node.mapping is not None
+        
+        print(f"\nJoin Query Schema Linking:")
+        print(f"Tables: {[t.name for t in node.mapping.tables]}")
+        print(f"Joins: {len(node.mapping.joins)}")
+        if node.mapping.joins:
+            for join in node.mapping.joins:
+                print(f"  {join.from_table} -> {join.to} ({join.on})")
+    
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set") 
+    async def test_reader_callback(self):
+        """Test the _reader_callback method"""
+        query = "Find schools in California"
+        memory, node_id = await self.setup_test_environment(query, "test_reader", "Find all schools")
+        
+        agent = SchemaLinkerAgent(memory, llm_config={"model_name": "gpt-4o"})
+        
+        # Test reader callback directly
+        context = await agent._reader_callback(memory, node_id, None)
+        
+        assert context is not None
+        assert "intent" in context
+        assert "full_schema" in context
+        assert context["intent"] == node_id
+        assert "<database_schema>" in context["full_schema"]
+        
+        print(f"\nReader callback context keys: {list(context.keys())}")
+        print(f"Intent: {context['intent']}")
+        print(f"Schema length: {len(context['full_schema'])}")
+    
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
+    async def test_parse_linking_xml(self):
+        """Test XML parsing of schema linking results"""
+        memory = KeyValueMemory()
+        agent = SchemaLinkerAgent(memory, llm_config={"model_name": "gpt-4o"})
+        
+        # Test simple linking XML
+        simple_xml = """
+        <schema_linking>
+          <selected_tables>
+            <table name="schools" alias="s">
+              <purpose>Contains school location data</purpose>
+              <columns>
+                <column name="County" used_for="filter">
+                  <reason>Filter by Alameda County</reason>
+                </column>
+                <column name="CDSCode" used_for="join">
+                  <reason>Join with frpm table</reason>
+                </column>
+              </columns>
+            </table>
+            <table name="frpm" alias="f">
+              <purpose>Contains free meal rate data</purpose>
+              <columns>
+                <column name="CDSCode" used_for="join">
+                  <reason>Join with schools table</reason>
+                </column>
+                <column name="Eligible Free Rate (K-12)" used_for="select">
+                  <reason>The metric we need to find max of</reason>
+                </column>
+              </columns>
+            </table>
+          </selected_tables>
+          <joins>
+            <join>
+              <from_table>schools</from_table>
+              <from_column>CDSCode</from_column>
+              <to_table>frpm</to_table>
+              <to_column>CDSCode</to_column>
+              <join_type>INNER</join_type>
+            </join>
+          </joins>
+          <sample_query_pattern>SELECT MAX(f."Eligible Free Rate (K-12)") FROM schools s JOIN frpm f ON s.CDSCode = f.CDSCode WHERE s.County = 'Alameda'</sample_query_pattern>
+        </schema_linking>
+        """
+        
+        result = agent._parse_linking_xml(simple_xml)
+        
+        assert result is not None
+        assert len(result["tables"]) == 2
+        assert result["tables"][0]["name"] == "schools"
+        assert result["tables"][1]["name"] == "frpm"
+        assert len(result["joins"]) == 1
+        assert result["joins"][0]["from_table"] == "schools"
+        assert result["joins"][0]["to_table"] == "frpm"
+        assert "sample_query" in result
+        
+        print(f"\nParsed Schema Linking: {result}")
+    
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
+    async def test_create_mapping_from_linking(self):
+        """Test mapping creation from linking results"""
+        memory = KeyValueMemory()
+        agent = SchemaLinkerAgent(memory, llm_config={"model_name": "gpt-4o"})
+        
+        # Create test linking result
+        linking_result = {
+            "tables": [
+                {
+                    "name": "schools",
+                    "alias": "s",
+                    "purpose": "School information",
+                    "columns": [
+                        {"name": "CDSCode", "used_for": "join", "reason": "Primary key"},
+                        {"name": "County", "used_for": "filter", "reason": "Filter condition"}
+                    ]
+                },
+                {
+                    "name": "frpm",
+                    "alias": "f",
+                    "purpose": "Free meal data",
+                    "columns": [
+                        {"name": "CDSCode", "used_for": "join", "reason": "Foreign key"},
+                        {"name": "Free Meal Count (K-12)", "used_for": "select", "reason": "Output column"}
+                    ]
+                }
+            ],
+            "joins": [
+                {
+                    "from_table": "schools",
+                    "from_column": "CDSCode",
+                    "to_table": "frpm",
+                    "to_column": "CDSCode",
+                    "join_type": "INNER"
+                }
+            ]
+        }
+        
+        mapping = await agent._create_mapping_from_linking(linking_result)
+        
+        assert mapping is not None
+        assert len(mapping.tables) == 2
+        assert mapping.tables[0].name == "schools"
+        assert mapping.tables[0].alias == "s"
+        assert len(mapping.columns) == 4
+        assert len(mapping.joins) == 1
+        assert mapping.joins[0].from_table == "schools"
+        assert mapping.joins[0].to == "frpm"
+        
+        print("✓ Mapping creation test passed")
+    
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
+    async def test_real_bird_queries(self):
+        """Test with real BIRD dataset queries"""
+        test_cases = [
+            {
+                "query": "List the zip codes of all charter schools in Fresno County Office of Education.",
+                "intent": "Get zip codes of charter schools in Fresno County Office of Education"
+            },
+            {
+                "query": "What is the number of SAT test takers in schools with the highest FRPM count for K-12 students?",
+                "intent": "Find SAT test taker count for schools with maximum FRPM count"
+            }
+        ]
+        
+        for i, test_case in enumerate(test_cases):
+            print(f"\n--- Testing BIRD Query {i+1} ---")
+            print(f"Query: {test_case['query']}")
+            
+            memory, node_id = await self.setup_test_environment(
+                test_case['query'], 
+                f"bird_test_{i}",
+                test_case['intent']
+            )
+            
+            agent = SchemaLinkerAgent(memory, llm_config={
+                "model_name": "gpt-4o",
+                "temperature": 0.1,
+                "timeout": 60
+            })
+            
+            # Run the agent
+            result = await agent.run(f"node:{node_id} - Link schema for this query node")
+            
+            assert result is not None
+            assert len(result.messages) > 0
+            
+            # Check node mapping
+            tree_manager = QueryTreeManager(memory)
+            node = await tree_manager.get_node(node_id)
+            assert node.mapping is not None
+            assert len(node.mapping.tables) > 0
+            
+            print(f"Tables linked: {[t.name for t in node.mapping.tables]}")
+            print(f"Columns linked: {len(node.mapping.columns)}")
+            print(f"Joins identified: {len(node.mapping.joins)}")
+
+
+if __name__ == "__main__":
+    # Set up logging
+    logging.basicConfig(level=logging.INFO)
+    
+    # Run tests
+    asyncio.run(pytest.main([__file__, "-v", "-s"]))

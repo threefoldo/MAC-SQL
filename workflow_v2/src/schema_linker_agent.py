@@ -1,5 +1,5 @@
 """
-Schema Linking Agent for text-to-SQL workflow.
+Schema Linker Agent for text-to-SQL workflow.
 
 This agent links relevant schema information to query nodes in the tree.
 It analyzes the intent of a node and finds all relevant tables, columns,
@@ -23,7 +23,7 @@ from memory_content_types import (
 )
 
 
-class SchemaLinkingAgent(BaseMemoryAgent):
+class SchemaLinkerAgent(BaseMemoryAgent):
     """
     Links database schema elements to query nodes.
     
@@ -157,11 +157,9 @@ Output your analysis in this XML format:
                     await self.tree_manager.update_node_mapping(node_id, mapping)
                     
                     # Record in history
-                    await self.history_manager.record_update(
+                    await self.history_manager.record_revise(
                         node_id=node_id,
-                        field="mapping",
-                        old_value=None,
-                        new_value=mapping
+                        new_mapping=mapping
                     )
                     
                     self.logger.info(f"Updated node {node_id} with schema mapping")
@@ -222,8 +220,8 @@ Output your analysis in this XML format:
         """Parse the schema linking XML output"""
         try:
             # Extract XML from output
-            xml_content = MemoryCallbackHelpers.extract_xml_content(output, "schema_linking")
-            if not xml_content:
+            xml_match = re.search(r'<schema_linking>.*?</schema_linking>', output, re.DOTALL)
+            if not xml_match:
                 # Try to find XML in code blocks
                 xml_match = re.search(r'```xml\s*\n(.*?)\n```', output, re.DOTALL)
                 if xml_match:
@@ -231,6 +229,8 @@ Output your analysis in this XML format:
                 else:
                     self.logger.error("No schema linking XML found in output")
                     return None
+            else:
+                xml_content = xml_match.group()
             
             # Parse XML
             root = ET.fromstring(xml_content)
@@ -326,9 +326,10 @@ Output your analysis in this XML format:
             join_mapping = JoinMapping(
                 from_table=join_info["from_table"],
                 to=join_info["to_table"],
-                on=f"{from_ref} = {to_ref}",
-                type=join_info.get("join_type", "INNER")
+                on=f"{from_ref} = {to_ref}"
             )
+            if mapping.joins is None:
+                mapping.joins = []
             mapping.joins.append(join_mapping)
         
         return mapping

@@ -199,3 +199,164 @@ class KeyValueMemory(Memory):
         if query_result.results:
             return query_result.results[0]
         return None
+    
+    async def show_all(self, format: str = "detailed") -> Union[str, Dict[str, Any], List[Dict[str, Any]]]:
+        """
+        Show all content in the memory store.
+        
+        Args:
+            format: Output format - "detailed" (all info), "summary" (keys only), 
+                   "json" (machine-readable), or "table" (formatted table)
+                   
+        Returns:
+            Formatted string or dictionary containing all memory content
+        """
+        if format == "json":
+            # Return as dictionary for programmatic access
+            all_content = {}
+            seen_keys = set()
+            
+            # Iterate in reverse to get latest values for each key
+            for item in reversed(self._store):
+                if item.metadata and "variable_name" in item.metadata:
+                    key = item.metadata["variable_name"]
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        content = item.content
+                        
+                        # Deserialize JSON content
+                        if item.mime_type == MemoryMimeType.JSON and isinstance(content, str):
+                            try:
+                                content = json.loads(content)
+                            except json.JSONDecodeError:
+                                pass
+                        
+                        all_content[key] = {
+                            "value": content,
+                            "mime_type": str(item.mime_type),
+                            "metadata": item.metadata
+                        }
+            return all_content
+        
+        elif format == "summary":
+            # Just show keys and types
+            lines = ["=== Memory Store Summary ==="]
+            lines.append(f"Total items: {len(self._store)}")
+            lines.append("\nKeys (most recent values):")
+            
+            seen_keys = set()
+            for item in reversed(self._store):
+                if item.metadata and "variable_name" in item.metadata:
+                    key = item.metadata["variable_name"]
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        mime_type = str(item.mime_type).split('.')[-1] if hasattr(item.mime_type, 'name') else str(item.mime_type)
+                        lines.append(f"  - {key} ({mime_type})")
+            
+            return "\n".join(lines)
+        
+        elif format == "table":
+            # Formatted table view
+            lines = ["=" * 80]
+            lines.append("MEMORY STORE CONTENTS".center(80))
+            lines.append("=" * 80)
+            lines.append(f"{'Key':<30} {'Type':<15} {'Size':<10} {'Value Preview':<25}")
+            lines.append("-" * 80)
+            
+            seen_keys = set()
+            for item in reversed(self._store):
+                if item.metadata and "variable_name" in item.metadata:
+                    key = item.metadata["variable_name"]
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        
+                        # Format type
+                        mime_type = str(item.mime_type).split('.')[-1] if hasattr(item.mime_type, 'name') else str(item.mime_type)
+                        
+                        # Format size
+                        content = item.content
+                        if isinstance(content, str):
+                            size = f"{len(content)} chars"
+                        elif isinstance(content, (dict, list)):
+                            size = f"{len(content)} items"
+                        elif isinstance(content, bytes):
+                            size = f"{len(content)} bytes"
+                        else:
+                            size = "N/A"
+                        
+                        # Format preview
+                        if item.mime_type == MemoryMimeType.JSON and isinstance(content, str):
+                            try:
+                                content = json.loads(content)
+                            except:
+                                pass
+                        
+                        if isinstance(content, str):
+                            preview = content[:20] + "..." if len(content) > 20 else content
+                        elif isinstance(content, dict):
+                            preview = f"Dict with {len(content)} keys"
+                        elif isinstance(content, list):
+                            preview = f"List with {len(content)} items"
+                        else:
+                            preview = str(type(content).__name__)
+                        
+                        lines.append(f"{key:<30} {mime_type:<15} {size:<10} {preview:<25}")
+            
+            lines.append("=" * 80)
+            lines.append(f"Total unique keys: {len(seen_keys)}")
+            lines.append(f"Total stored items: {len(self._store)}")
+            
+            return "\n".join(lines)
+        
+        else:  # detailed
+            # Full detailed view
+            lines = ["=== Memory Store Detailed Contents ==="]
+            lines.append(f"Total items in store: {len(self._store)}\n")
+            
+            seen_keys = set()
+            for i, item in enumerate(reversed(self._store)):
+                if item.metadata and "variable_name" in item.metadata:
+                    key = item.metadata["variable_name"]
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        lines.append(f"Key: {key}")
+                        lines.append(f"  MIME Type: {item.mime_type}")
+                        lines.append(f"  Metadata: {item.metadata}")
+                        
+                        content = item.content
+                        if item.mime_type == MemoryMimeType.JSON and isinstance(content, str):
+                            try:
+                                content = json.loads(content)
+                                lines.append(f"  Value: {json.dumps(content, indent=2)}")
+                            except:
+                                lines.append(f"  Value: {content}")
+                        elif isinstance(content, str) and len(content) > 100:
+                            lines.append(f"  Value (truncated): {content[:100]}...")
+                            lines.append(f"  Full length: {len(content)} characters")
+                        else:
+                            lines.append(f"  Value: {content}")
+                        lines.append("")
+            
+            lines.append(f"\nTotal unique keys: {len(seen_keys)}")
+            
+            return "\n".join(lines)
+    
+    async def get_keys(self) -> List[str]:
+        """
+        Get all unique keys in the memory store.
+        
+        Returns:
+            List of all unique keys (most recent values only)
+        """
+        seen_keys = []
+        seen_set = set()
+        
+        # Iterate in reverse to maintain order of most recent
+        for item in reversed(self._store):
+            if item.metadata and "variable_name" in item.metadata:
+                key = item.metadata["variable_name"]
+                if key not in seen_set:
+                    seen_set.add(key)
+                    seen_keys.append(key)
+        
+        return list(reversed(seen_keys))  # Return in original order

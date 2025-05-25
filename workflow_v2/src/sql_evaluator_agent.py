@@ -8,12 +8,12 @@ the results and provides insights.
 
 import logging
 import re
-import json
+import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
 from keyvalue_memory import KeyValueMemory
-from base_memory_agent import BaseMemoryAgent, MemoryCallbackHelpers
+from base_memory_agent import BaseMemoryAgent
 from query_tree_manager import QueryTreeManager
 from node_history_manager import NodeHistoryManager
 from sql_executor import SQLExecutor
@@ -56,26 +56,24 @@ Consider:
 - Are there any performance concerns?
 - Could the query be improved?
 
-Output your analysis in JSON format:
+Output your analysis in XML format:
 
-```json
-{
-  "answers_intent": true/false,
-  "result_quality": "excellent|good|acceptable|poor",
-  "result_summary": "Brief description of what the results show",
-  "issues": [
-    {
-      "type": "data_quality|performance|logic|other",
-      "description": "Description of the issue",
-      "severity": "high|medium|low"
-    }
-  ],
-  "suggestions": [
-    "Any suggestions for improvement"
-  ],
-  "confidence_score": 0.0-1.0
-}
-```
+<evaluation>
+  <answers_intent>yes|no|partially</answers_intent>
+  <result_quality>excellent|good|acceptable|poor</result_quality>
+  <result_summary>Brief description of what the results show</result_summary>
+  <issues>
+    <issue>
+      <type>data_quality|performance|logic|other</type>
+      <description>Description of the issue</description>
+      <severity>high|medium|low</severity>
+    </issue>
+  </issues>
+  <suggestions>
+    <suggestion>Any suggestions for improvement</suggestion>
+  </suggestions>
+  <confidence_score>0.0-1.0</confidence_score>
+</evaluation>
 
 Be constructive and specific in your analysis."""
     
@@ -91,66 +89,95 @@ Be constructive and specific in your analysis."""
                 node_id = parts[0][5:]
         
         if not node_id:
-            node_id = await memory.get("current_node_id")
+            self.logger.error("No node_id found in task. Task must be in format 'node:{node_id} - ...'")
+            return context
         
-        if node_id:
-            # Get the node
-            node = await self.tree_manager.get_node(node_id)
-            if node:
-                context["node_id"] = node_id
-                context["intent"] = node.intent
-                context["sql"] = node.sql
-                
-                # Get execution result if available
-                if node.executionResult:
-                    context["execution_result"] = self._format_execution_result(node.executionResult)
-                else:
-                    # Try to get from memory
-                    exec_result = await memory.get("execution_result")
-                    if exec_result:
-                        context["execution_result"] = exec_result
+        # Get the node
+        node = await self.tree_manager.get_node(node_id)
+        if not node:
+            self.logger.error(f"Node {node_id} not found")
+            return context
+            
+        context["node_id"] = node_id
+        context["intent"] = node.intent
+        context["sql"] = node.sql
+        
+        # Get execution result if available
+        if node.executionResult:
+            context["execution_result"] = self._format_execution_result(node.executionResult)
         else:
-            # Try to get SQL and results from memory
-            sql = await memory.get("generated_sql")
-            if sql:
-                context["sql"] = sql
-            
-            exec_result = await memory.get("execution_result")
-            if exec_result:
-                context["execution_result"] = exec_result
-            
-            # Try to get intent
-            query = await memory.get("user_query")
-            if query:
-                context["intent"] = query
-        
-        # If we have SQL but no execution result, execute it
-        if context.get("sql") and not context.get("execution_result"):
-            db_path = await memory.get("database_path")
-            if db_path:
-                self.logger.info("Executing SQL to get results for analysis")
-                executor = SQLExecutor(db_path)
+            # Execute SQL if we have it
+            if node.sql:
+                # Get task context to get database name
+                task_context = await memory.get("taskContext")
+                if not task_context:
+                    self.logger.error("No task context found in memory")
+                    return context
+                
+                db_name = task_context.get("databaseName")
+                if not db_name:
+                    self.logger.error("No database name in task context")
+                    return context
+                
+                # Get data path and dataset name from database schema
+                db_schema = await memory.get("databaseSchema")
+                data_path = None
+                dataset_name = "bird"  # Default to bird
+                
+                if db_schema and "metadata" in db_schema:
+                    metadata = db_schema["metadata"]
+                    data_path = metadata.get("data_path")
+                    dataset_name = metadata.get("dataset_name", "bird")
+                
+                if not data_path:
+                    # Try to infer from common patterns
+                    self.logger.warning("No data_path in database schema metadata, using default")
+                    data_path = "/home/norman/work/text-to-sql/MAC-SQL/data/bird"
+                
+                self.logger.info(f"Executing SQL for node {node_id} on database {db_name}")
+                self.logger.debug(f"Using data_path: {data_path}, dataset_name: {dataset_name}")
+                
+                executor = SQLExecutor(data_path, dataset_name)
                 
                 try:
-                    results, columns = executor.execute_sql(context["sql"], get_columns=True)
+                    result_dict = executor.execute_sql(node.sql, db_name)
                     
-                    execution_result = {
-                        "status": "success",
-                        "columns": columns,
-                        "data": results,
-                        "row_count": len(results),
-                        "execution_time": None
-                    }
+                    if result_dict.get("error"):
+                        execution_result = {
+                            "status": "error",
+                            "error": result_dict["error"],
+                            "row_count": 0,
+                            "columns": [],
+                            "data": []
+                        }
+                    else:
+                        execution_result = {
+                            "status": "success",
+                            "columns": result_dict.get("column_names", []),
+                            "data": result_dict.get("data", []),
+                            "row_count": len(result_dict.get("data", [])),
+                            "execution_time": result_dict.get("execution_time")
+                        }
                     
                     context["execution_result"] = execution_result
-                    # Store for future use
-                    await memory.set("execution_result", execution_result)
+                    
+                    # Update node with execution result
+                    exec_result_obj = ExecutionResult(
+                        data=execution_result["data"],
+                        rowCount=execution_result["row_count"],
+                        error=execution_result.get("error")
+                    )
+                    success = execution_result["status"] == "success"
+                    await self.tree_manager.update_node_result(node_id, exec_result_obj, success)
                     
                 except Exception as e:
+                    self.logger.error(f"Error executing SQL: {str(e)}", exc_info=True)
                     execution_result = {
                         "status": "error",
                         "error": str(e),
-                        "row_count": 0
+                        "row_count": 0,
+                        "columns": [],
+                        "data": []
                     }
                     context["execution_result"] = execution_result
         
@@ -167,19 +194,12 @@ Be constructive and specific in your analysis."""
         last_message = result.messages[-1].content
         
         try:
-            # Extract JSON from response
-            json_str = MemoryCallbackHelpers.extract_code_block(last_message, "json")
-            if not json_str:
-                # Try to find JSON without code block
-                json_match = re.search(r'\{.*\}', last_message, re.DOTALL)
-                if json_match:
-                    json_str = json_match.group()
+            # Extract XML from response
+            evaluation_result = self._parse_evaluation_xml(last_message)
             
-            if json_str:
-                analysis = json.loads(json_str)
-                
+            if evaluation_result:
                 # Store analysis
-                await memory.set("execution_analysis", analysis)
+                await memory.set("execution_analysis", evaluation_result)
                 
                 # Get node ID
                 node_id = None
@@ -192,33 +212,21 @@ Be constructive and specific in your analysis."""
                     node_id = await memory.get("current_node_id")
                 
                 if node_id:
-                    # Update node status based on analysis
-                    node = await self.tree_manager.get_node(node_id)
-                    if node:
-                        # Determine node status based on analysis
-                        if analysis.get("answers_intent") and analysis.get("result_quality") in ["excellent", "good"]:
-                            new_status = NodeStatus.COMPLETED
-                        elif analysis.get("issues") and any(issue["severity"] == "high" for issue in analysis["issues"]):
-                            new_status = NodeStatus.FAILED
-                        else:
-                            new_status = NodeStatus.COMPLETED
-                        
-                        # Update node status
-                        await self.tree_manager.update_node_status(node_id, new_status)
-                        
-                        # Store analysis separately
-                        await memory.set(f"node_{node_id}_analysis", analysis)
-                        
-                        self.logger.info(f"Updated node {node_id} status to {new_status.value} based on analysis")
+                    # Store analysis for the node
+                    await memory.set(f"node_{node_id}_analysis", evaluation_result)
+                    
+                    # Note: Node status is already updated when execution result is stored
+                    # The status (EXECUTED_SUCCESS or EXECUTED_FAILED) is set based on whether
+                    # the SQL execution had errors, not based on the quality of results
+                    
+                    self.logger.info(f"Stored analysis for node {node_id} - Answers intent: {evaluation_result.get('answers_intent')}, Quality: {evaluation_result.get('result_quality')}")
                 
-                self.logger.info(f"Analysis complete - Answers intent: {analysis.get('answers_intent')}, Quality: {analysis.get('result_quality')}")
+                self.logger.info(f"Analysis complete - Answers intent: {evaluation_result.get('answers_intent')}, Quality: {evaluation_result.get('result_quality')}")
                 
-        except json.JSONDecodeError as e:
-            self.logger.error(f"Failed to parse JSON analysis: {str(e)}")
+        except Exception as e:
+            self.logger.error(f"Error parsing evaluation results: {str(e)}", exc_info=True)
             # Store raw analysis
             await memory.set("execution_analysis_raw", last_message)
-        except Exception as e:
-            self.logger.error(f"Error in parser callback: {str(e)}", exc_info=True)
     
     def _extract_code_block(self, content: str, language: str = "") -> Optional[str]:
         """
@@ -282,53 +290,59 @@ Be constructive and specific in your analysis."""
         analysis = await self.memory.get("execution_analysis")
         return analysis
     
-    async def execute_and_analyze(self, sql: str, intent: str, db_path: str) -> Dict[str, Any]:
-        """
-        Execute SQL and analyze results (convenience method).
-        
-        Args:
-            sql: The SQL query to execute
-            intent: The original query intent
-            db_path: Path to the database
-            
-        Returns:
-            Combined execution and analysis results
-        """
-        # Execute SQL
-        executor = SQLExecutor(db_path)
-        
+    
+    def _parse_evaluation_xml(self, output: str) -> Optional[Dict[str, Any]]:
+        """Parse the evaluation XML output"""
         try:
-            results, columns = executor.execute_sql(sql, get_columns=True)
+            # Extract XML from output
+            xml_match = re.search(r'<evaluation>.*?</evaluation>', output, re.DOTALL)
+            if not xml_match:
+                # Try to find XML in code blocks
+                xml_match = re.search(r'```xml\s*\n(.*?)\n```', output, re.DOTALL)
+                if xml_match:
+                    xml_content = xml_match.group(1)
+                else:
+                    self.logger.error("No evaluation XML found in output")
+                    return None
+            else:
+                xml_content = xml_match.group()
             
-            execution_result = {
-                "status": "success",
-                "columns": columns,
-                "data": results,
-                "row_count": len(results),
-                "sql": sql
+            # Parse XML
+            root = ET.fromstring(xml_content)
+            
+            result = {
+                "answers_intent": root.findtext("answers_intent", "").strip(),
+                "result_quality": root.findtext("result_quality", "").strip(),
+                "result_summary": root.findtext("result_summary", "").strip(),
+                "confidence_score": float(root.findtext("confidence_score", "0.5"))
             }
+            
+            # Parse issues
+            issues = []
+            issues_elem = root.find("issues")
+            if issues_elem is not None:
+                for issue_elem in issues_elem.findall("issue"):
+                    issue = {
+                        "type": issue_elem.findtext("type", "").strip(),
+                        "description": issue_elem.findtext("description", "").strip(),
+                        "severity": issue_elem.findtext("severity", "").strip()
+                    }
+                    if issue["type"] or issue["description"]:  # Only add if not empty
+                        issues.append(issue)
+            result["issues"] = issues
+            
+            # Parse suggestions
+            suggestions = []
+            suggestions_elem = root.find("suggestions")
+            if suggestions_elem is not None:
+                for suggestion_elem in suggestions_elem.findall("suggestion"):
+                    suggestion_text = suggestion_elem.text
+                    if suggestion_text and suggestion_text.strip():
+                        suggestions.append(suggestion_text.strip())
+            result["suggestions"] = suggestions
+            
+            return result
             
         except Exception as e:
-            execution_result = {
-                "status": "error",
-                "error": str(e),
-                "sql": sql,
-                "row_count": 0
-            }
-        
-        # Store in memory for analysis
-        await self.memory.set("generated_sql", sql)
-        await self.memory.set("execution_result", execution_result)
-        await self.memory.set("user_query", intent)
-        
-        # Run analysis
-        result = await self.run(f"Analyze SQL execution results for: {intent}")
-        
-        # Get analysis
-        analysis = await self.memory.get("execution_analysis")
-        
-        # Combine results
-        return {
-            "execution": execution_result,
-            "analysis": analysis
-        }
+            self.logger.error(f"Error parsing evaluation XML: {str(e)}", exc_info=True)
+            return None
