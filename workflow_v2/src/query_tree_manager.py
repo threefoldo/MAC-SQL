@@ -120,19 +120,27 @@ class QueryTreeManager:
             return QueryNode.from_dict(tree["nodes"][node_id])
         return None
     
-    async def update_node(self, node_id: str, updates: Dict[str, Any]) -> None:
+    async def update_node(self, node_id: str, updates: Any) -> None:
         """
         Update a node with new data.
         
         Args:
             node_id: The node ID to update
-            updates: Dictionary of updates to apply
+            updates: Dictionary of updates to apply or a QueryNode object
         """
         tree = await self.get_tree()
         if not tree or "nodes" not in tree or node_id not in tree["nodes"]:
             raise ValueError(f"Node {node_id} not found")
         
-        tree["nodes"][node_id].update(updates)
+        # Handle QueryNode object
+        if isinstance(updates, dict):
+            tree["nodes"][node_id].update(updates)
+        elif isinstance(updates, QueryNode):
+            tree["nodes"][node_id] = updates.to_dict()
+        # Handle dictionary updates
+        else:
+            raise TypeError(f"Updates must be a dictionary or QueryNode, got {type(updates)}")
+            
         await self.memory.set("queryTree", tree)
         self.logger.info(f"Updated node {node_id}")
     

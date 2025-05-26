@@ -281,7 +281,10 @@ class QueryNode:
         if self.sql is not None:
             result['sql'] = self.sql
         if self.executionResult is not None:
-            result['executionResult'] = self.executionResult.to_dict()
+            if isinstance(self.executionResult, dict):
+                result['executionResult'] = self.executionResult
+            else:
+                result['executionResult'] = self.executionResult.to_dict()
         if self.parentId is not None:
             result['parentId'] = self.parentId
         if self.combineStrategy is not None:

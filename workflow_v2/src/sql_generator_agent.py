@@ -96,6 +96,11 @@ If the node has previous errors in history or result:
 - Use proper JOIN conditions from the mapping
 - Add comments for complex logic using /* */
 
+### CRITICAL RULES:
+- Use EXACT table and column names from the mapping (CASE-SENSITIVE)
+- Do NOT modify or guess table/column names
+- If the mapping has incorrect names, the query will fail - do not try to fix them
+
 ## Output Format:
 
 <sql_generation>
@@ -122,8 +127,6 @@ IMPORTANT: Generate SQL that exactly matches the intent using ONLY the schema el
         current_node_id = await self.tree_manager.get_current_node_id()
         if not current_node_id:
             return {"error": "No current_node_id found"}
-        
-        self.logger.debug(f"Using current_node_id from QueryTreeManager: {current_node_id}")
         
         # Get the node from QueryTreeManager
         node = await self.tree_manager.get_node(current_node_id)
@@ -163,7 +166,8 @@ IMPORTANT: Generate SQL that exactly matches the intent using ONLY the schema el
         # Remove None values
         context = {k: v for k, v in context.items() if v is not None}
         
-        self.logger.debug(f"SQL generator context prepared for node: {current_node_id}")
+        self.logger.info(f"SQL generator context prepared for node: {current_node_id}")
+        self.logger.info(f"Node detail: {node_dict}")
         
         return context
     
@@ -174,6 +178,7 @@ IMPORTANT: Generate SQL that exactly matches the intent using ONLY the schema el
             return
             
         last_message = result.messages[-1].content
+        self.logger.info(f"Raw LLM output (first 500 chars): {last_message[:500]}")
         
         try:
             # Parse the XML output
@@ -221,11 +226,11 @@ IMPORTANT: Generate SQL that exactly matches the intent using ONLY the schema el
                         self.logger.info(f"Explanation: {generation_result['explanation']}")
                     
                     self.logger.info("="*60)
-                    self.logger.debug(f"Updated node {node_id} with generated SQL")
+                    self.logger.info(f"Updated node {node_id} with generated SQL")
                 else:
                     # Store SQL in memory
                     await memory.set("generated_sql", sql)
-                    self.logger.debug("Stored generated SQL in memory")
+                    self.logger.info(f"Stored generated SQL in memory: {sql}")
                 
                 # Store additional metadata
                 await memory.set("last_sql_generation", generation_result)

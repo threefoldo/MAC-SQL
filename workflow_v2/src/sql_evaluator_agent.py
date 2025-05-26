@@ -42,45 +42,36 @@ class SQLEvaluatorAgent(BaseMemoryAgent):
     
     def _build_system_message(self) -> str:
         """Build the system message for SQL result analysis"""
-        return """You are an expert at analyzing SQL query execution results and managing query tree progression. 
+        return """You are an expert at analyzing SQL query execution results for a single node.
 
-You will receive either:
-1. A current node with SQL results to evaluate, OR
-2. An empty current node, requiring you to analyze the entire query tree
+Your job is to:
+1. Evaluate if the SQL results correctly answer the node's query intent
+2. Check data quality and reasonableness of results
+3. Identify any potential issues or unexpected outcomes
+4. Determine the quality of the results
 
-YOUR TASKS:
+Quality Assessment:
+- EXCELLENT: Perfect results, exactly answers the intent, no issues
+- GOOD: Correct results with minor concerns that don't affect validity
+- ACCEPTABLE: Results partially answer the intent or have moderate issues
+- POOR: Results fail to answer the intent or have major issues
 
-Scenario 1 - Current Node Has SQL Results:
-- Evaluate if the SQL results correctly answer the node's intent
-- Check data quality and reasonableness of results
-- Identify any potential issues or unexpected outcomes
-- Determine if quality is excellent/good (proceed) or acceptable/poor (retry)
-
-Scenario 2 - Current Node is Empty (no SQL):
-- You're being asked to check the overall tree status
-- Look at the tree_status information provided
-- Determine what should happen next based on the tree state
-
-DECISION LOGIC:
-
-1. If evaluating a node with SQL results:
-   - Quality is excellent/good → Mark as complete, check for next unprocessed node
-   - Quality is acceptable/poor → Indicate retry needed
-
-2. If current node is empty (tree status check):
-   - If there are unprocessed nodes → Indicate which node to process next
-   - If all nodes have good/excellent results → Tree is complete
-   - If some nodes need improvement → Indicate which needs retry
+Consider:
+- Does the result set size make sense?
+- Are there any NULL values that might indicate issues?
+- Does the data look reasonable and complete?
+- Are there any performance concerns?
+- Could the query be improved?
 
 Output your analysis in XML format:
 
 <evaluation>
-  <answers_intent>yes|no|partially|not_applicable</answers_intent>
-  <result_quality>excellent|good|acceptable|poor|not_applicable</result_quality>
-  <result_summary>Brief description of what the results show OR tree status summary</result_summary>
+  <answers_intent>yes|no|partially</answers_intent>
+  <result_quality>excellent|good|acceptable|poor</result_quality>
+  <result_summary>Brief description of what the results show</result_summary>
   <issues>
     <issue>
-      <type>data_quality|performance|logic|tree_status|other</type>
+      <type>data_quality|performance|logic|other</type>
       <description>Description of the issue</description>
       <severity>high|medium|low</severity>
     </issue>
@@ -89,19 +80,9 @@ Output your analysis in XML format:
     <suggestion>Any suggestions for improvement</suggestion>
   </suggestions>
   <confidence_score>0.0-1.0</confidence_score>
-  <next_action>CRITICAL - One of these exact phrases:
-    - "CONTINUE: Process node [node_id]" (when there's an unprocessed node)
-    - "RETRY: Improve node [node_id]" (when a node needs fixing)
-    - "TREE COMPLETE: All nodes have good results" (when everything is done)
-    - "ERROR: [description]" (when something is wrong)
-  </next_action>
 </evaluation>
 
-IMPORTANT:
-- Always check tree_status when current node has no SQL
-- Only declare "TREE COMPLETE" when ALL nodes have good/excellent results
-- Be specific about which node to process next
-- Use exact phrases in next_action for clear coordination"""
+Focus ONLY on evaluating the current node's SQL results. Do not concern yourself with other nodes or tree completion."""
     
     async def _reader_callback(self, memory: KeyValueMemory, task: str, cancellation_token) -> Dict[str, Any]:
         """Read context from memory before analyzing results"""
@@ -124,47 +105,8 @@ IMPORTANT:
         context["intent"] = node.intent
         context["sql"] = node.sql
         
-        # If current node has no SQL, provide tree status information
-        if not node.sql:
-            # Get tree status to help determine next action
-            tree = await self.tree_manager.get_tree()
-            if tree and "nodes" in tree:
-                tree_status = {
-                    "total_nodes": len(tree["nodes"]),
-                    "nodes_with_sql": 0,
-                    "nodes_with_good_results": 0,
-                    "unprocessed_nodes": [],
-                    "nodes_needing_improvement": []
-                }
-                
-                for nid, n in tree["nodes"].items():
-                    if n.get("sql"):
-                        tree_status["nodes_with_sql"] += 1
-                        
-                        # Check evaluation status
-                        analysis = await memory.get(f"node_{nid}_analysis")
-                        if analysis:
-                            quality = analysis.get("result_quality", "").lower()
-                            if quality in ["excellent", "good"]:
-                                tree_status["nodes_with_good_results"] += 1
-                            elif quality in ["acceptable", "poor"]:
-                                tree_status["nodes_needing_improvement"].append({
-                                    "node_id": nid,
-                                    "intent": n.get("intent", "")[:50] + "...",
-                                    "quality": quality
-                                })
-                    else:
-                        # Node without SQL is unprocessed
-                        tree_status["unprocessed_nodes"].append({
-                            "node_id": nid,
-                            "intent": n.get("intent", "")[:50] + "..."
-                        })
-                
-                context["tree_status"] = tree_status
-                self.logger.debug(f"Tree status: {tree_status}")
-        
         # Get execution result if available
-        elif node.executionResult:
+        if node.executionResult:
             context["execution_result"] = self._format_execution_result(node.executionResult)
         else:
             # Execute SQL if we have it
@@ -253,6 +195,7 @@ IMPORTANT:
             return
             
         last_message = result.messages[-1].content
+        self.logger.info(f"Raw LLM output (first 500 chars): {last_message[:500]}")
         
         try:
             # Extract XML from response
@@ -326,32 +269,27 @@ IMPORTANT:
                             self.logger.info(f"    - [{issue.get('severity', 'N/A').upper()}] {issue.get('description', 'N/A')}")
                     
                     self.logger.info("="*60)
-                    self.logger.debug(f"Stored analysis for node {node_id}")
+                    self.logger.info(f"Stored analysis for node {node_id}")
                     
-                    # Handle node progression based on quality
+                    # Log quality for debugging
                     quality = evaluation_result.get("result_quality", "").lower()
-                    if quality in ["excellent", "good"]:
-                        await self._handle_node_progression(memory, node_id)
-                    else:
-                        # Make it clear that the node needs improvement
+                    if quality in ["acceptable", "poor"]:
                         self.logger.info("="*60)
                         self.logger.info(f"⚠️  NODE NEEDS IMPROVEMENT - Quality: {quality.upper()}")
-                        self.logger.info("Coordinator should retry with fixes for the issues identified above")
+                        self.logger.info("This node should be retried with fixes")
                         self.logger.info("="*60)
                 
-                # Log the next_action for debugging
-                next_action = evaluation_result.get("next_action", "")
-                if next_action:
-                    self.logger.info(f"NEXT ACTION GUIDANCE: {next_action}")
-                
-                self.logger.debug(f"Analysis complete - Answers intent: {evaluation_result.get('answers_intent')}, Quality: {evaluation_result.get('result_quality')}")
+                self.logger.info(f"Analysis complete - Answers intent: {evaluation_result.get('answers_intent')}, Quality: {evaluation_result.get('result_quality')}")
                 
         except Exception as e:
             self.logger.error(f"Error parsing evaluation results: {str(e)}", exc_info=True)
             # Store raw analysis
             await memory.set("execution_analysis_raw", last_message)
     
-    async def _handle_node_progression(self, memory: KeyValueMemory, current_node_id: str) -> None:
+    # Node progression is now handled by TaskStatusChecker
+    # The following method has been removed as it's no longer needed
+    
+    async def _handle_node_progression_REMOVED(self, memory: KeyValueMemory, current_node_id: str) -> None:
         """
         Handle node progression after a successful evaluation.
         
@@ -440,7 +378,7 @@ IMPORTANT:
         except Exception as e:
             self.logger.error(f"Error in node progression: {str(e)}", exc_info=True)
     
-    async def _all_children_good(self, nodes: Dict[str, Any], parent_id: str) -> bool:
+    async def _all_children_good_REMOVED(self, nodes: Dict[str, Any], parent_id: str) -> bool:
         """Check if all children of a node have good quality evaluation."""
         parent_node = nodes.get(parent_id)
         if not parent_node:
@@ -550,8 +488,7 @@ IMPORTANT:
                 "answers_intent": root.findtext("answers_intent", "").strip(),
                 "result_quality": root.findtext("result_quality", "").strip(),
                 "result_summary": root.findtext("result_summary", "").strip(),
-                "confidence_score": float(root.findtext("confidence_score", "0.5")),
-                "next_action": root.findtext("next_action", "").strip()
+                "confidence_score": float(root.findtext("confidence_score", "0.5"))
             }
             
             # Parse issues

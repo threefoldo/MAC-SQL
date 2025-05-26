@@ -107,7 +107,8 @@ The query tree has been created. The root node ID will be logged and should be u
         if task_context:
             context["database_id"] = task_context.databaseName
         
-        self.logger.debug(f"Query analyzer context prepared with schema length: {len(schema_xml)}")
+        self.logger.info(f"Query analyzer context prepared with schema length: {len(schema_xml)}")
+        self.logger.info(f"query: {context['query']} database: {context['database_id']}")
         
         return context
     

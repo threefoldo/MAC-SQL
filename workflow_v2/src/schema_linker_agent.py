@@ -48,9 +48,17 @@ class SchemaLinkerAgent(BaseMemoryAgent):
         return """You are a schema linking expert for text-to-SQL conversion. Your job is to:
 
 1. Analyze the query intent to understand data requirements
-2. Select ONLY the necessary tables and columns
+2. Select ONLY the necessary tables and columns FROM THE PROVIDED SCHEMA
 3. Identify join relationships between selected tables
 4. Map schema elements to their purpose in the query
+
+CRITICAL RULES:
+- Read the database_schema XML below carefully - it contains ALL available tables and columns
+- You MUST use EXACT table and column names from the provided database schema
+- Table and column names are CASE-SENSITIVE - use them exactly as shown in the schema
+- DO NOT invent or modify table/column names - only use what exists in the schema
+- If you cannot find a needed table/column, state this clearly instead of guessing
+- The schema is provided in the 'full_schema' field below - this is your ONLY source of truth for table and column names
 
 When analyzing, consider:
 - The current node's intent and complexity
@@ -107,8 +115,6 @@ Output your analysis in this XML format:
         if not current_node_id:
             return {"error": "No current_node_id found"}
         
-        self.logger.debug(f"Using current_node_id: {current_node_id}")
-        
         # Get the node from QueryTreeManager
         node = await self.tree_manager.get_node(current_node_id)
         if not node:
@@ -147,7 +153,8 @@ Output your analysis in this XML format:
         # Remove None values
         context = {k: v for k, v in context.items() if v is not None}
         
-        self.logger.debug(f"Schema linking context prepared for node: {current_node_id}")
+        self.logger.info(f"Schema linking context prepared for node: {current_node_id}")
+        self.logger.info(f"Node details: {node_dict}")
         
         return context
     
@@ -158,6 +165,9 @@ Output your analysis in this XML format:
             return
             
         last_message = result.messages[-1].content
+        
+        # Log the raw output for debugging
+        self.logger.info(f"Raw LLM output (first 500 chars): {last_message[:500]}")
         
         try:
             # Parse the XML output
@@ -217,56 +227,76 @@ Output your analysis in this XML format:
                             self.logger.info(f"  - {join.from_table} -> {join.to}: {join.on}")
                     
                     self.logger.info("="*60)
-                    self.logger.debug(f"Updated node {node_id} with schema mapping")
+                    self.logger.info(f"Updated node {node_id} with schema mapping")
                 else:
                     # Store mapping in memory for other uses
                     await memory.set("last_schema_mapping", mapping.to_dict())
-                    self.logger.debug("Stored schema mapping in memory")
+                    self.logger.info(f"Stored schema mapping in memory: {mapping.to_dict()}")
                 
         except Exception as e:
             self.logger.error(f"Error parsing schema linking results: {str(e)}", exc_info=True)
     
     async def _get_full_schema_xml(self) -> str:
         """Get full database schema with sample data in XML format"""
+        import html
+        
         tables = await self.schema_manager.get_all_tables()
         
         if not tables:
             return "<database_schema>No schema loaded</database_schema>"
         
+        # Log available tables for debugging
+        self.logger.info(f"Available tables in schema: {list(tables.keys())}")
+        
         xml_parts = ["<database_schema>"]
+        xml_parts.append(f"  <total_tables>{len(tables)}</total_tables>")
+        xml_parts.append("  <tables>")
         
         for table_name, table in tables.items():
-            xml_parts.append(f'  <table name="{table_name}">')
+            xml_parts.append(f'    <table name="{html.escape(table_name)}">')
+            xml_parts.append(f'      <column_count>{len(table.columns)}</column_count>')
+            xml_parts.append('      <columns>')
             
             # Add columns
             for col_name, col_info in table.columns.items():
-                xml_parts.append(f'    <column name="{col_name}">')
-                xml_parts.append(f'      <type>{col_info.dataType}</type>')
-                xml_parts.append(f'      <nullable>{col_info.nullable}</nullable>')
+                # Escape special characters in column names
+                escaped_col_name = html.escape(col_name)
+                xml_parts.append(f'        <column name="{escaped_col_name}">')
+                xml_parts.append(f'          <type>{col_info.dataType}</type>')
+                xml_parts.append(f'          <nullable>{col_info.nullable}</nullable>')
                 
                 if col_info.isPrimaryKey:
-                    xml_parts.append('      <primary_key>true</primary_key>')
+                    xml_parts.append('          <primary_key>true</primary_key>')
                 
                 if col_info.isForeignKey and col_info.references:
-                    xml_parts.append(f'      <foreign_key>')
-                    xml_parts.append(f'        <references_table>{col_info.references["table"]}</references_table>')
-                    xml_parts.append(f'        <references_column>{col_info.references["column"]}</references_column>')
-                    xml_parts.append(f'      </foreign_key>')
+                    xml_parts.append(f'          <foreign_key>')
+                    xml_parts.append(f'            <references_table>{html.escape(col_info.references["table"])}</references_table>')
+                    xml_parts.append(f'            <references_column>{html.escape(col_info.references["column"])}</references_column>')
+                    xml_parts.append(f'          </foreign_key>')
                 
-                xml_parts.append('    </column>')
+                xml_parts.append('        </column>')
+            
+            xml_parts.append('      </columns>')
             
             # Add sample data if available
             if hasattr(table, 'sampleData') and table.sampleData:
-                xml_parts.append('    <sample_data>')
+                xml_parts.append('      <sample_data>')
+                xml_parts.append(f'        <row_count>{len(table.sampleData[:3])}</row_count>')
                 for i, row in enumerate(table.sampleData[:3]):  # Limit to 3 samples
-                    xml_parts.append(f'      <row id="{i+1}">')
+                    xml_parts.append(f'        <row id="{i+1}">')
                     for col, value in row.items():
-                        xml_parts.append(f'        <{col}>{value}</{col}>')
-                    xml_parts.append('      </row>')
-                xml_parts.append('    </sample_data>')
+                        # Use CDATA for values to handle special characters
+                        escaped_col = html.escape(col)
+                        if value is not None:
+                            xml_parts.append(f'          <field name="{escaped_col}"><![CDATA[{value}]]></field>')
+                        else:
+                            xml_parts.append(f'          <field name="{escaped_col}" null="true"/>')
+                    xml_parts.append('        </row>')
+                xml_parts.append('      </sample_data>')
             
-            xml_parts.append('  </table>')
+            xml_parts.append('    </table>')
         
+        xml_parts.append("  </tables>")
         xml_parts.append('</database_schema>')
         
         return '\n'.join(xml_parts)
