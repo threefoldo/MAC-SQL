@@ -1,5 +1,5 @@
 """
-Query Analyzer Agent for text-to-SQL workflow.
+Query Analyzer Agent for text-to-SQL tree orchestration.
 
 This agent analyzes user queries and creates structured intents in memory.
 For complex queries, it decomposes them into simpler sub-queries and builds
@@ -144,7 +144,7 @@ The query tree has been created. The root node ID will be logged and should be u
                 # Set current node based on complexity
                 if analysis.get("complexity") == "simple":
                     # Simple query: current node is the root
-                    await memory.set("current_node_id", root_id)
+                    await self.tree_manager.set_current_node_id(root_id)
                     self.logger.debug(f"Simple query - set root {root_id} as current node")
                 else:
                     # Complex query: current node is the first child
@@ -155,11 +155,11 @@ The query tree has been created. The root node ID will be logged and should be u
                         children = await self.tree_manager.get_children(root_id)
                         if children and len(children) > 0:
                             first_child_id = children[0].nodeId
-                            await memory.set("current_node_id", first_child_id)
+                            await self.tree_manager.set_current_node_id(first_child_id)
                             self.logger.debug(f"Complex query - set first child {first_child_id} as current node")
                         else:
                             # Fallback to root if no children
-                            await memory.set("current_node_id", root_id)
+                            await self.tree_manager.set_current_node_id(root_id)
                             self.logger.debug(f"Complex query but no children found - set root as current")
                 
                 # User-friendly logging

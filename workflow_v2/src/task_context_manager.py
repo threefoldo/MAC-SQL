@@ -1,5 +1,5 @@
 """
-Task context manager for text-to-SQL workflow.
+Task context manager for text-to-SQL tree orchestration.
 
 This module provides easy access to task context data stored in KeyValueMemory.
 """

@@ -1,5 +1,5 @@
 """
-Schema Linker Agent for text-to-SQL workflow.
+Schema Linker Agent for text-to-SQL tree orchestration.
 
 This agent links relevant schema information to query nodes in the tree.
 It analyzes the intent of a node and finds all relevant tables, columns,

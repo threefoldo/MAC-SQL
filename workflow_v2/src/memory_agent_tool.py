@@ -1,5 +1,5 @@
 """
-Memory-enabled Agent Tool for text-to-SQL workflow.
+Memory-enabled Agent Tool for text-to-SQL tree orchestration.
 
 This module implements a memory-enabled agent tool that provides
 pre-processing (memory reading) and post-processing (memory updating) callbacks
@@ -80,7 +80,7 @@ class MemoryAgentTool(BaseTool[MemoryAgentToolArgs, TaskResult], Component[Memor
     """
     
     component_config_schema = MemoryAgentToolConfig
-    component_provider_override = "workflow.memory_agent_tool.MemoryAgentTool"
+    component_provider_override = "tree_orchestrator.memory_agent_tool.MemoryAgentTool"
     
     def __init__(
         self, 

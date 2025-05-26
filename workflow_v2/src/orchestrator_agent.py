@@ -1,8 +1,8 @@
 """
-Orchestrator Agent for text-to-SQL workflow.
+Orchestrator Agent for text-to-SQL tree orchestration.
 
 This agent orchestrates the entire text-to-SQL conversion process by:
-1. Managing the workflow
+1. Managing the tree processing
 2. Calling appropriate agents as tools
 3. Making decisions based on the current state
 4. Ensuring all nodes have correct SQL
@@ -35,10 +35,10 @@ from memory_content_types import TaskStatus, NodeStatus
 
 class OrchestratorAgent:
     """
-    Orchestrates the text-to-SQL workflow by coordinating multiple agents.
+    Orchestrates the text-to-SQL tree processing by coordinating multiple agents.
     
     This agent:
-    1. Initializes the workflow with database schema
+    1. Initializes the tree processing with database schema
     2. Analyzes the user query
     3. Links schema to query nodes
     4. Generates SQL for all nodes
@@ -124,7 +124,7 @@ class OrchestratorAgent:
         ]
         
         # System message for the orchestrator
-        system_message = """You are an orchestrator for text-to-SQL conversion workflow.
+        system_message = """You are an orchestrator for text-to-SQL tree processing.
 
 Your goal is to convert a natural language query into correct SQL by:
 1. Analyzing the query (may decompose complex queries)
@@ -133,7 +133,7 @@ Your goal is to convert a natural language query into correct SQL by:
 4. Executing and validating SQL
 5. Ensuring all nodes have correct SQL before completing
 
-Workflow steps:
+Tree processing steps:
 1. First, analyze the query using analyze_query tool
 2. Get tree status to see all nodes
 3. For each node without schema mapping, use link_schema
@@ -465,7 +465,7 @@ Always check tree status after major operations.
 Database: {db_id}
 Schema has been loaded.
 
-Start by analyzing the query, then follow the workflow to generate SQL for all nodes."""
+Start by analyzing the query, then follow the tree processing steps to generate SQL for all nodes."""
         
         # Run the agent
         messages = [TextMessage(content=initial_message, source="user")]

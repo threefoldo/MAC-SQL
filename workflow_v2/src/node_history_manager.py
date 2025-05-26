@@ -1,5 +1,5 @@
 """
-Node history manager for text-to-SQL workflow.
+Node history manager for text-to-SQL tree orchestration.
 
 This module provides easy access to node operation history stored in KeyValueMemory.
 """

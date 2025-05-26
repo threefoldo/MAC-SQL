@@ -1,5 +1,5 @@
 """
-Base class for memory-enabled agents in the text-to-SQL workflow.
+Base class for memory-enabled agents in the text-to-SQL tree orchestration.
 
 This module provides a base class that standardizes how agents are created
 and integrated with KeyValueMemory using the MemoryAgentTool pattern.
@@ -19,12 +19,12 @@ from memory_agent_tool import MemoryAgentTool
 
 class BaseMemoryAgent(ABC):
     """
-    Base class for agents that use memory in the text-to-SQL workflow.
+    Base class for agents that use memory in the text-to-SQL tree orchestration.
     
     This class provides the standard pattern for creating agents that:
     1. Use AutoGen's AssistantAgent for LLM interactions
     2. Integrate with KeyValueMemory for state management
-    3. Are wrapped with MemoryAgentTool for use in workflows
+    3. Are wrapped with MemoryAgentTool for use in tree orchestration
     """
     
     # Override in subclasses
@@ -176,7 +176,7 @@ class BaseMemoryAgent(ABC):
     
     def get_tool(self) -> MemoryAgentTool:
         """
-        Get the wrapped tool for use in workflows.
+        Get the wrapped tool for use in tree orchestration.
         
         Returns:
             The MemoryAgentTool instance

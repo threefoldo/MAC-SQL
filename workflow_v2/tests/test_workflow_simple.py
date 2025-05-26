@@ -13,7 +13,7 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from text_to_sql_workflow import TextToSQLWorkflow, run_text_to_sql
+from text_to_sql_tree_orchestrator import TextToSQLTreeOrchestrator, run_text_to_sql
 
 
 async def test_workflow_initialization():
@@ -21,7 +21,7 @@ async def test_workflow_initialization():
     print("Testing workflow initialization...")
     
     try:
-        workflow = TextToSQLWorkflow(
+        workflow = TextToSQLTreeOrchestrator(
             data_path="/home/norman/work/text-to-sql/MAC-SQL/data/bird",
             tables_json_path="/home/norman/work/text-to-sql/MAC-SQL/data/bird/dev_tables.json",
             dataset_name="bird"
@@ -47,7 +47,7 @@ async def test_database_loading():
     print("Testing database loading...")
     
     try:
-        workflow = TextToSQLWorkflow(
+        workflow = TextToSQLTreeOrchestrator(
             data_path="/home/norman/work/text-to-sql/MAC-SQL/data/bird",
             tables_json_path="/home/norman/work/text-to-sql/MAC-SQL/data/bird/dev_tables.json",
             dataset_name="bird"
@@ -82,7 +82,7 @@ async def test_simple_query():
         results = await run_text_to_sql(
             query=query,
             db_name="california_schools",
-            use_coordinator=False,
+            
             display_results=False
         )
         
@@ -132,7 +132,7 @@ async def test_workflow_components():
     print("Testing workflow components...")
     
     try:
-        workflow = TextToSQLWorkflow(
+        workflow = TextToSQLTreeOrchestrator(
             data_path="/home/norman/work/text-to-sql/MAC-SQL/data/bird",
             tables_json_path="/home/norman/work/text-to-sql/MAC-SQL/data/bird/dev_tables.json",
             dataset_name="bird"
@@ -160,7 +160,7 @@ async def test_validation_functions():
     print("Testing validation functions...")
     
     try:
-        workflow = TextToSQLWorkflow(
+        workflow = TextToSQLTreeOrchestrator(
             data_path="/home/norman/work/text-to-sql/MAC-SQL/data/bird",
             tables_json_path="/home/norman/work/text-to-sql/MAC-SQL/data/bird/dev_tables.json",
             dataset_name="bird"

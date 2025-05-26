@@ -1,5 +1,5 @@
 """
-Query tree manager for text-to-SQL workflow.
+Query tree manager for text-to-SQL tree orchestration.
 
 This module provides easy access to query tree data stored in KeyValueMemory.
 """

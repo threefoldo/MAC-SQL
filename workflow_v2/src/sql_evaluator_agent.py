@@ -1,5 +1,5 @@
 """
-SQL Evaluator Agent for text-to-SQL workflow.
+SQL Evaluator Agent for text-to-SQL tree orchestration.
 
 This agent evaluates SQL query results and provides analysis of the execution.
 Note: The actual SQL execution is handled by SQLExecutor, this agent analyzes
@@ -42,29 +42,45 @@ class SQLEvaluatorAgent(BaseMemoryAgent):
     
     def _build_system_message(self) -> str:
         """Build the system message for SQL result analysis"""
-        return """You are an expert at analyzing SQL query execution results. Your job is to:
+        return """You are an expert at analyzing SQL query execution results and managing query tree progression. 
 
-1. Evaluate if the SQL results correctly answer the original query intent
-2. Check data quality and reasonableness of results
-3. Identify any potential issues or unexpected outcomes
-4. Suggest improvements if needed
+You will receive either:
+1. A current node with SQL results to evaluate, OR
+2. An empty current node, requiring you to analyze the entire query tree
 
-Consider:
-- Does the result set size make sense?
-- Are there any NULL values that might indicate issues?
-- Does the data look reasonable and complete?
-- Are there any performance concerns?
-- Could the query be improved?
+YOUR TASKS:
+
+Scenario 1 - Current Node Has SQL Results:
+- Evaluate if the SQL results correctly answer the node's intent
+- Check data quality and reasonableness of results
+- Identify any potential issues or unexpected outcomes
+- Determine if quality is excellent/good (proceed) or acceptable/poor (retry)
+
+Scenario 2 - Current Node is Empty (no SQL):
+- You're being asked to check the overall tree status
+- Look at the tree_status information provided
+- Determine what should happen next based on the tree state
+
+DECISION LOGIC:
+
+1. If evaluating a node with SQL results:
+   - Quality is excellent/good → Mark as complete, check for next unprocessed node
+   - Quality is acceptable/poor → Indicate retry needed
+
+2. If current node is empty (tree status check):
+   - If there are unprocessed nodes → Indicate which node to process next
+   - If all nodes have good/excellent results → Tree is complete
+   - If some nodes need improvement → Indicate which needs retry
 
 Output your analysis in XML format:
 
 <evaluation>
-  <answers_intent>yes|no|partially</answers_intent>
-  <result_quality>excellent|good|acceptable|poor</result_quality>
-  <result_summary>Brief description of what the results show</result_summary>
+  <answers_intent>yes|no|partially|not_applicable</answers_intent>
+  <result_quality>excellent|good|acceptable|poor|not_applicable</result_quality>
+  <result_summary>Brief description of what the results show OR tree status summary</result_summary>
   <issues>
     <issue>
-      <type>data_quality|performance|logic|other</type>
+      <type>data_quality|performance|logic|tree_status|other</type>
       <description>Description of the issue</description>
       <severity>high|medium|low</severity>
     </issue>
@@ -73,28 +89,30 @@ Output your analysis in XML format:
     <suggestion>Any suggestions for improvement</suggestion>
   </suggestions>
   <confidence_score>0.0-1.0</confidence_score>
+  <next_action>CRITICAL - One of these exact phrases:
+    - "CONTINUE: Process node [node_id]" (when there's an unprocessed node)
+    - "RETRY: Improve node [node_id]" (when a node needs fixing)
+    - "TREE COMPLETE: All nodes have good results" (when everything is done)
+    - "ERROR: [description]" (when something is wrong)
+  </next_action>
 </evaluation>
 
-Be constructive and specific in your analysis."""
+IMPORTANT:
+- Always check tree_status when current node has no SQL
+- Only declare "TREE COMPLETE" when ALL nodes have good/excellent results
+- Be specific about which node to process next
+- Use exact phrases in next_action for clear coordination"""
     
     async def _reader_callback(self, memory: KeyValueMemory, task: str, cancellation_token) -> Dict[str, Any]:
         """Read context from memory before analyzing results"""
         context = {}
         
         # Extract node_id from task
-        node_id = None
-        if "node:" in task:
-            parts = task.split(" - ", 1)
-            if parts[0].startswith("node:"):
-                node_id = parts[0][5:]
-        
+        node_id = await self.tree_manager.get_current_node_id()
         if not node_id:
-            # Try to get current node from memory
-            node_id = await memory.get("current_node_id")
-            if not node_id:
-                self.logger.error("No node_id found in task or memory. Task must be in format 'node:{node_id} - ...' or current_node_id must be set")
-                return context
-            self.logger.info(f"Using current node from memory: {node_id}")
+            self.logger.error("No node_id found in task or QueryTreeManager. Task must be in format 'node:{node_id} - ...' or current_node_id must be set in QueryTreeManager")
+            return context
+        self.logger.info(f"Using current node: {node_id}")
         
         # Get the node
         node = await self.tree_manager.get_node(node_id)
@@ -106,8 +124,47 @@ Be constructive and specific in your analysis."""
         context["intent"] = node.intent
         context["sql"] = node.sql
         
+        # If current node has no SQL, provide tree status information
+        if not node.sql:
+            # Get tree status to help determine next action
+            tree = await self.tree_manager.get_tree()
+            if tree and "nodes" in tree:
+                tree_status = {
+                    "total_nodes": len(tree["nodes"]),
+                    "nodes_with_sql": 0,
+                    "nodes_with_good_results": 0,
+                    "unprocessed_nodes": [],
+                    "nodes_needing_improvement": []
+                }
+                
+                for nid, n in tree["nodes"].items():
+                    if n.get("sql"):
+                        tree_status["nodes_with_sql"] += 1
+                        
+                        # Check evaluation status
+                        analysis = await memory.get(f"node_{nid}_analysis")
+                        if analysis:
+                            quality = analysis.get("result_quality", "").lower()
+                            if quality in ["excellent", "good"]:
+                                tree_status["nodes_with_good_results"] += 1
+                            elif quality in ["acceptable", "poor"]:
+                                tree_status["nodes_needing_improvement"].append({
+                                    "node_id": nid,
+                                    "intent": n.get("intent", "")[:50] + "...",
+                                    "quality": quality
+                                })
+                    else:
+                        # Node without SQL is unprocessed
+                        tree_status["unprocessed_nodes"].append({
+                            "node_id": nid,
+                            "intent": n.get("intent", "")[:50] + "..."
+                        })
+                
+                context["tree_status"] = tree_status
+                self.logger.debug(f"Tree status: {tree_status}")
+        
         # Get execution result if available
-        if node.executionResult:
+        elif node.executionResult:
             context["execution_result"] = self._format_execution_result(node.executionResult)
         else:
             # Execute SQL if we have it
@@ -213,7 +270,7 @@ Be constructive and specific in your analysis."""
                         node_id = parts[0][5:]
                 
                 if not node_id:
-                    node_id = await memory.get("current_node_id")
+                    node_id = await self.tree_manager.get_current_node_id()
                 
                 if node_id:
                     # Store analysis for the node
@@ -282,6 +339,11 @@ Be constructive and specific in your analysis."""
                         self.logger.info("Coordinator should retry with fixes for the issues identified above")
                         self.logger.info("="*60)
                 
+                # Log the next_action for debugging
+                next_action = evaluation_result.get("next_action", "")
+                if next_action:
+                    self.logger.info(f"NEXT ACTION GUIDANCE: {next_action}")
+                
                 self.logger.debug(f"Analysis complete - Answers intent: {evaluation_result.get('answers_intent')}, Quality: {evaluation_result.get('result_quality')}")
                 
         except Exception as e:
@@ -297,7 +359,7 @@ Be constructive and specific in your analysis."""
         1. If current node has siblings, move to next sibling
         2. If no more siblings, move to parent
         3. If all children of parent are good, parent becomes current
-        4. If at root and all descendants are good, workflow is complete
+        4. If at root and all descendants are good, tree processing is complete
         """
         try:
             tree = await self.tree_manager.get_tree()
@@ -310,15 +372,15 @@ Be constructive and specific in your analysis."""
                 return
             
             # Find parent and siblings
-            parent_id = current_node.get("parent")
+            parent_id = current_node.get("parentId")
             if not parent_id:
                 # This is the root node - check if all children are good
                 if await self._all_children_good(nodes, current_node_id):
                     self.logger.info("="*60)
-                    self.logger.info("✅ WORKFLOW COMPLETE: Root node and all descendants have good SQL!")
+                    self.logger.info("✅ TREE COMPLETE: Root node and all descendants have good SQL!")
                     self.logger.info("All queries in the tree have been successfully executed.")
                     self.logger.info("="*60)
-                    await memory.set("workflow_complete", True)
+                    await memory.set("tree_complete", True)
                 else:
                     self.logger.info("="*60) 
                     self.logger.info("⚠️  Root node processed but some children still need work")
@@ -327,32 +389,51 @@ Be constructive and specific in your analysis."""
                 return
             
             parent_node = nodes.get(parent_id)
-            if not parent_node or "children" not in parent_node:
+            if not parent_node or "childIds" not in parent_node:
                 return
             
-            siblings = parent_node["children"]
+            siblings = parent_node["childIds"]
             current_index = siblings.index(current_node_id) if current_node_id in siblings else -1
             
             # Check for next sibling
             if current_index >= 0 and current_index < len(siblings) - 1:
                 next_node_id = siblings[current_index + 1]
-                await memory.set("current_node_id", next_node_id)
+                await self.tree_manager.set_current_node_id(next_node_id)
                 self.logger.debug(f"Moving to next sibling: {next_node_id}")
+                
+                # Get info about the next node
+                next_node = nodes.get(next_node_id)
+                if next_node:
+                    self.logger.info("="*60)
+                    self.logger.info("📍 NODE PROGRESSION: Moving to next sibling")
+                    self.logger.info(f"Next node: {next_node.get('intent', 'Unknown intent')}")
+                    self.logger.info("Tree processing continues - coordinator should process this node")
+                    self.logger.info("="*60)
             else:
                 # No more siblings - check if all siblings are good
                 if await self._all_children_good(nodes, parent_id):
                     # All children are good - move to parent
-                    await memory.set("current_node_id", parent_id)
+                    await self.tree_manager.set_current_node_id(parent_id)
                     self.logger.debug(f"All children of {parent_id} are good - moving to parent")
                     
-                    # Check if parent is root and workflow is complete
-                    if not nodes[parent_id].get("parent"):
+                    # Get info about parent node
+                    parent_node_info = nodes.get(parent_id)
+                    if parent_node_info:
                         self.logger.info("="*60)
-                        self.logger.info("✅ WORKFLOW COMPLETE: All sub-queries executed and parent query ready!")
+                        self.logger.info("📍 NODE PROGRESSION: All children complete - moving to parent")
+                        self.logger.info(f"Parent node: {parent_node_info.get('intent', 'Unknown intent')}")
+                        self.logger.info("Parent node should now combine results from children")
+                        self.logger.info("Tree processing continues - coordinator should process parent node")
+                        self.logger.info("="*60)
+                    
+                    # Check if parent is root and tree processing is complete
+                    if not nodes[parent_id].get("parentId"):
+                        self.logger.info("="*60)
+                        self.logger.info("✅ TREE COMPLETE: All sub-queries executed and parent query ready!")
                         self.logger.info("All nodes in the query tree have good SQL results.")
                         self.logger.info("Parent node can now combine results from all children.")
                         self.logger.info("="*60)
-                        await memory.set("workflow_complete", True)
+                        await memory.set("tree_complete", True)
                 else:
                     self.logger.debug(f"Not all siblings are good yet - staying on {current_node_id}")
                     
@@ -365,7 +446,7 @@ Be constructive and specific in your analysis."""
         if not parent_node:
             return False
         
-        children_ids = parent_node.get("children", [])
+        children_ids = parent_node.get("childIds", [])
         if not children_ids:
             # No children - check the node itself
             analysis_key = f"node_{parent_id}_analysis"
@@ -434,8 +515,8 @@ Be constructive and specific in your analysis."""
         """
         self.logger.info(f"Analyzing execution for node: {node_id}")
         
-        # Store node ID in memory
-        await self.memory.set("current_node_id", node_id)
+        # Set current node ID in QueryTreeManager
+        await self.tree_manager.set_current_node_id(node_id)
         
         # Run the agent
         task = f"node:{node_id} - Analyze SQL execution results"
@@ -469,7 +550,8 @@ Be constructive and specific in your analysis."""
                 "answers_intent": root.findtext("answers_intent", "").strip(),
                 "result_quality": root.findtext("result_quality", "").strip(),
                 "result_summary": root.findtext("result_summary", "").strip(),
-                "confidence_score": float(root.findtext("confidence_score", "0.5"))
+                "confidence_score": float(root.findtext("confidence_score", "0.5")),
+                "next_action": root.findtext("next_action", "").strip()
             }
             
             # Parse issues

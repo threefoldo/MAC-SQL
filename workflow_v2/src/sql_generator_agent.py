@@ -1,5 +1,5 @@
 """
-SQL Generator Agent for text-to-SQL workflow.
+SQL Generator Agent for text-to-SQL tree orchestration.
 
 This agent generates SQL queries based on query node intents and their
 linked schema information.
@@ -268,9 +268,19 @@ IMPORTANT: Generate SQL that exactly matches the intent using ONLY the schema el
                 "considerations": root.findtext("considerations", "").strip()
             }
             
-            # Clean up SQL (remove extra whitespace)
+            # Clean up SQL (preserve line structure but remove extra whitespace)
             if result["sql"]:
-                result["sql"] = re.sub(r'\s+', ' ', result["sql"]).strip()
+                # Split into lines, clean each line, then rejoin
+                lines = result["sql"].split('\n')
+                cleaned_lines = []
+                for line in lines:
+                    line = line.strip()
+                    if line and not line.startswith('--'):  # Skip empty lines and comments
+                        # Clean internal whitespace but preserve line structure
+                        line = re.sub(r'\s+', ' ', line)
+                        cleaned_lines.append(line)
+                
+                result["sql"] = ' '.join(cleaned_lines).strip()
             
             return result
             

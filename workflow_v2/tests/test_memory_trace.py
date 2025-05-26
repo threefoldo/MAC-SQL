@@ -21,7 +21,7 @@ from typing import Dict, Any, List, Optional
 sys.path.append(str(Path(__file__).parent / "src"))
 
 from keyvalue_memory import KeyValueMemory
-from text_to_sql_workflow import TextToSQLWorkflow
+from text_to_sql_tree_orchestrator import TextToSQLTreeOrchestrator
 from memory_content_types import QueryNode, NodeStatus
 
 # Set up logging
@@ -37,7 +37,7 @@ logging.getLogger('httpx').setLevel(logging.WARNING)
 class MemoryTracer:
     """Traces memory operations during workflow execution."""
     
-    def __init__(self, workflow: TextToSQLWorkflow):
+    def __init__(self, workflow: TextToSQLTreeOrchestrator):
         self.workflow = workflow
         self.memory = workflow.memory
         self.traces = []
@@ -304,7 +304,7 @@ async def test_memory_trace():
     data_path = "/home/norman/work/text-to-sql/MAC-SQL/data/bird"
     tables_json_path = str(Path(data_path) / "dev_tables.json")
     
-    workflow = TextToSQLWorkflow(
+    workflow = TextToSQLTreeOrchestrator(
         data_path=data_path,
         tables_json_path=tables_json_path,
         dataset_name="bird"

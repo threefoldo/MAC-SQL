@@ -28,3 +28,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Runtime Assumptions
 - Assume the Jupyter notebook server is always running
+
+## Version Control and Workflow
+- Always skip .ipynb_checkpoints directory

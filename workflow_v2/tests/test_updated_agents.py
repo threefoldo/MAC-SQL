@@ -212,7 +212,7 @@ async def test_sql_executor_agent():
 
 @pytest.mark.asyncio
 async def test_agent_tool_integration():
-    """Test that agents can be used as tools in a workflow"""
+    """Test that agents can be used as tools in tree orchestration"""
     memory = KeyValueMemory()
     
     # Initialize context

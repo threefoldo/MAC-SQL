@@ -1,5 +1,5 @@
 """
-Database schema manager for text-to-SQL workflow.
+Database schema manager for text-to-SQL tree orchestration.
 
 This module provides easy access to database schema data stored in KeyValueMemory.
 """

@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
-from text_to_sql_workflow import run_text_to_sql
+from text_to_sql_tree_orchestrator import run_text_to_sql
 
 
 def setup_environment():

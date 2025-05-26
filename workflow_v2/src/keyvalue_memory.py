@@ -1,7 +1,7 @@
 """
-Memory implementations for the text-to-SQL workflow.
+Memory implementations for the text-to-SQL tree orchestration.
 
-This module contains memory implementations for the text-to-SQL workflow,
+This module contains memory implementations for the text-to-SQL tree orchestration,
 including a key-value store memory implementation for the TaskOrchestrator.
 """
 
@@ -159,15 +159,16 @@ class KeyValueMemory(Memory):
         await self.add(content_item)
         logging.debug(f"[{self.__class__.__name__}] Set key '{key}'.")
 
-    async def get(self, key: str) -> Optional[ContentType]:
+    async def get(self, key: str, default: Optional[ContentType] = None) -> Optional[ContentType]:
         """
         Get a value by key from the memory store.
         
         Args:
             key: The key to retrieve the value for
+            default: Default value to return if key is not found
             
         Returns:
-            The value associated with the key, or None if not found
+            The value associated with the key, or default if not found
         """
         query_result = await self.query(key)
         if query_result.results:
@@ -183,7 +184,7 @@ class KeyValueMemory(Memory):
                     return content
             
             return content
-        return None
+        return default
 
     async def get_with_details(self, key: str) -> Optional[MemoryContent]:
         """
