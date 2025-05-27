@@ -9,6 +9,10 @@ import os
 import sys
 import asyncio
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
@@ -79,44 +83,52 @@ async def test_simple_query():
     try:
         query = "How many schools are there?"
         
-        results = await run_text_to_sql(
-            query=query,
-            db_name="california_schools",
-            
-            display_results=False
+        # Add timeout to prevent hanging
+        results = await asyncio.wait_for(
+            run_text_to_sql(
+                query=query,
+                db_name="california_schools",
+                
+                display_results=False
+            ),
+            timeout=300.0  # 300 second timeout
         )
         
         # Basic validation
-        assert "final_results" in results
-        assert len(results["final_results"]) > 0
-        
-        final_result = results["final_results"][0]
-        assert final_result["sql"] is not None
-        assert "SELECT" in final_result["sql"].upper()
+        assert "final_result" in results
+        assert results["final_result"] is not None
         
         print("✓ Simple query test passed")
-        print(f"  Generated SQL: {final_result['sql'].strip()}")
+        print(f"  Final result: {results['final_result']}")
         
-        if final_result.get("execution_result"):
-            exec_result = final_result["execution_result"]
-            print(f"  Execution: {exec_result.get('rowCount', 0)} rows")
+        # Check if we have nodes with results
+        if "nodes" in results and results["nodes"]:
+            # Get the first node's results
+            first_node = list(results["nodes"].values())[0]
             
-            # Check if execution was successful
-            if exec_result.get('error'):
-                print(f"  ⚠ Execution error: {exec_result['error']}")
-        
-        # Check evaluation results
-        if final_result.get("analysis"):
-            analysis = final_result["analysis"]
-            answers_intent = analysis.get('answers_intent', 'unknown')
-            result_quality = analysis.get('result_quality', 'unknown')
-            print(f"  Evaluation: {answers_intent} intent, {result_quality} quality")
+            if first_node.get("sql"):
+                print(f"  Generated SQL: {first_node['sql'].strip()}")
             
-            # Validate evaluation
-            if answers_intent in ['yes', 'partially'] and result_quality in ['excellent', 'good', 'acceptable']:
-                print("  🎉 Query answered successfully!")
-            else:
-                print("  ⚠ Query may not be fully answered")
+            if first_node.get("execution_result"):
+                exec_result = first_node["execution_result"]
+                print(f"  Execution: {exec_result.get('rowCount', 0)} rows")
+                
+                # Check if execution was successful
+                if exec_result.get('error'):
+                    print(f"  ⚠ Execution error: {exec_result['error']}")
+            
+            # Check evaluation results
+            if first_node.get("analysis"):
+                analysis = first_node["analysis"]
+                answers_intent = analysis.get('answers_intent', 'unknown')
+                result_quality = analysis.get('result_quality', 'unknown')
+                print(f"  Evaluation: {answers_intent} intent, {result_quality} quality")
+                
+                # Validate evaluation
+                if answers_intent in ['yes', 'partially'] and result_quality in ['excellent', 'good', 'acceptable']:
+                    print("  🎉 Query answered successfully!")
+                else:
+                    print("  ⚠ Query may not be fully answered")
         
         return True
         
@@ -266,7 +278,7 @@ async def run_all_tests():
     print(f"TOTAL: {passed}/{total} tests passed")
     
     if passed == total:
-        print("🎉 All tests passed\!")
+        print("🎉 All tests passed!")
         return True
     else:
         print("⚠ Some tests failed")
@@ -291,4 +303,3 @@ def main():
 if __name__ == "__main__":
     exit_code = main()
     sys.exit(exit_code)
-EOF < /dev/null

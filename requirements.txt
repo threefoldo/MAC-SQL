@@ -9,3 +9,4 @@ tqdm
 nltk
 flask
 google-genai>=0.0.1
+python-dotenv

@@ -11,6 +11,10 @@ from pathlib import Path
 import sys
 import logging
 from typing import Dict, List, Optional, Any, Tuple
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Add parent directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent / 'src'))
@@ -258,10 +262,14 @@ class TestSQLGeneratorAgent:
         context = await agent._reader_callback(memory, f"node:{node_id}", None)
         
         assert context is not None
-        assert "intent" in context
-        assert "mapping" in context
-        # Child SQL is only present if children have SQL
-        assert "has_children" in context or "child_sql" not in context
+        assert "current_node" in context
+        
+        # Parse the current_node JSON to check content
+        import json
+        current_node = json.loads(context["current_node"])
+        assert current_node["intent"] == "Find all schools"
+        assert "mapping" in current_node
+        assert "tables" in current_node["mapping"]
         
         print(f"\nReader callback context keys: {list(context.keys())}")
     

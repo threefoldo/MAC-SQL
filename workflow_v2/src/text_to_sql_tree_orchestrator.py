@@ -167,6 +167,12 @@ DECISION LOGIC based on node status:
 
 CRITICAL: Even if query_analyzer creates some mapping, you MUST still call schema_linker before sql_generator. The mapping from query_analyzer is not sufficient for SQL generation.
 
+IMPORTANT FOR RETRIES:
+- The agents now receive complete context including execution results and evaluation analysis
+- When retrying (ACTION: RETRY NODE), the agents will see previous failures and adapt automatically
+- DO NOT keep calling the same agent repeatedly - they will generate different outputs based on context
+- Trust the agents to learn from failures and try different approaches
+
 The task_status_checker will tell you:
 - Current node status (what it has/needs)
 - Quality of results (if evaluated)

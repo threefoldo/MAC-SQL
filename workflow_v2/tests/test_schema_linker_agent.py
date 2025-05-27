@@ -10,6 +10,10 @@ import os
 from pathlib import Path
 import sys
 import logging
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Add parent directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent / 'src'))
@@ -195,13 +199,17 @@ class TestSchemaLinkerAgent:
         context = await agent._reader_callback(memory, node_id, None)
         
         assert context is not None
-        assert "intent" in context
+        assert "current_node" in context
         assert "full_schema" in context
-        assert context["intent"] == node_id
+        
+        # Parse the current_node JSON to check intent
+        import json
+        current_node = json.loads(context["current_node"])
+        assert current_node["intent"] == "Find all schools"
         assert "<database_schema>" in context["full_schema"]
         
         print(f"\nReader callback context keys: {list(context.keys())}")
-        print(f"Intent: {context['intent']}")
+        print(f"Current node intent: {current_node['intent']}")
         print(f"Schema length: {len(context['full_schema'])}")
     
     @pytest.mark.asyncio

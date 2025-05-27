@@ -1,90 +1,107 @@
-# Text-to-SQL Workflow
+# Text-to-SQL Tree Orchestration System
 
-This directory contains a modular implementation of a Text-to-SQL workflow that converts natural language questions into SQL queries for database interaction.
+This directory contains a modular implementation of a Text-to-SQL tree orchestration system that converts natural language questions into SQL queries for database interaction using a tree-based decomposition approach.
 
 ## Architecture
 
-The workflow uses a three-agent approach:
+The system uses a tree orchestration approach with specialized agents:
 
-1. **Schema Selector Agent**: Analyzes database schemas and prunes them to focus on relevant tables/columns
-2. **Decomposer Agent**: Converts natural language into SQL by understanding the schema and query
-3. **Refiner Agent**: Executes and refines SQL queries, handling errors and optimizations
+1. **Query Analyzer Agent**: Analyzes natural language queries and creates a tree structure for complex queries
+2. **Schema Linker Agent**: Links query elements to database schema (tables/columns)
+3. **SQL Generator Agent**: Generates SQL queries for each node in the query tree
+4. **SQL Evaluator Agent**: Evaluates and validates generated SQL queries
+5. **Tree Orchestrator**: Coordinates the agents and manages the query decomposition tree
 
 ## Files and Components
 
-The workflow is organized into modular components:
+The system is organized into modular components:
 
 - **`const.py`**: Common constants and prompt templates used by the agents
 - **`schema_manager.py`**: Handles database schema loading and manipulation
 - **`sql_executor.py`**: Executes SQL queries against databases with timeout handling
 - **`utils.py`**: General utility functions used throughout the project
-- **`workflow_utils.py`**: Specific utilities for the text-to-SQL workflow
-- **`08-selector-test2.ipynb`**: Demo notebook showing the workflow in action
+- **`text_to_sql_tree_orchestrator.py`**: Main orchestrator that manages the query tree
+- **Agent modules**: Individual agent implementations (query_analyzer_agent.py, schema_linker_agent.py, etc.)
+- **Memory system**: KeyValueMemory and related content types for state management
 
 ## Main Process Flow
 
-The Text-to-SQL workflow consists of three main steps:
+The Text-to-SQL tree orchestration consists of these main steps:
 
-1. **Schema Selection**:
-   - Input: Natural language query, database ID, and evidence
-   - Process: Load and analyze database schema, prune irrelevant tables/columns
-   - Output: Schema description in XML format
+1. **Query Analysis**:
+   - Input: Natural language query and evidence
+   - Process: Analyze query complexity and create tree structure if needed
+   - Output: Query tree with sub-queries for complex questions
 
-2. **SQL Generation**:
-   - Input: Schema from previous step and natural language query
-   - Process: Decompose the query into logical steps, generate SQL
-   - Output: SQL query string
+2. **Schema Linking**:
+   - Input: Query (or sub-query) and database schema
+   - Process: Identify relevant tables and columns
+   - Output: Linked schema elements
 
-3. **SQL Refinement**:
-   - Input: SQL query, database ID, and original query
-   - Process: Execute SQL, identify errors, refine and re-execute
-   - Output: Final SQL query with execution results
+3. **SQL Generation**:
+   - Input: Query node with linked schema
+   - Process: Generate SQL for each node in the tree
+   - Output: SQL query for the node
 
-## Using the Workflow
+4. **SQL Evaluation**:
+   - Input: Generated SQL and database
+   - Process: Validate and potentially refine SQL
+   - Output: Validated SQL query
 
-The workflow can be used in three different modes:
+5. **Tree Synthesis**:
+   - Input: Results from all tree nodes
+   - Process: Combine sub-query results for final answer
+   - Output: Final SQL query
 
-1. **Step-by-Step Mode**: Run each step individually to see detailed intermediate results
-2. **Combined Mode**: Run the entire pipeline at once for more concise output
-3. **Batch Mode**: Process multiple queries in sequence
+## Using the Tree Orchestrator
+
+The tree orchestrator automatically handles:
+
+1. **Simple Queries**: Direct SQL generation without decomposition
+2. **Complex Queries**: Automatic decomposition into sub-queries
+3. **Nested Queries**: Hierarchical tree structure for multi-step questions
 
 Example usage from Python:
 
 ```python
-from workflow_utils import process_text_to_sql
+from text_to_sql_tree_orchestrator import TextToSQLTreeOrchestrator
 
-# Process a single query
-result = await process_text_to_sql(
-    selector_agent=selector_agent,
-    decomposer_agent=decomposer_agent,
-    refiner_agent=refiner_agent,
-    task_json=json.dumps({
-        "db_id": "database_name",
-        "query": "Your natural language query",
-        "evidence": "Additional context if available"
-    })
+# Initialize orchestrator
+orchestrator = TextToSQLTreeOrchestrator(
+    model_name="gpt-4",
+    db_schema_path="path/to/schemas"
+)
+
+# Process a query
+result = await orchestrator.process_query(
+    query="Your natural language query",
+    db_id="database_name",
+    evidence="Additional context if available"
 )
 ```
 
 ## Customization
 
-The workflow can be customized in several ways:
+The tree orchestrator can be customized in several ways:
 
-- **Prompts**: Modify templates in `const.py` to adjust agent behavior
-- **Timeouts**: Change timeout values to handle more complex queries
-- **Error Handling**: Adjust error handling strategies in the workflow functions
-- **Output Format**: Modify the result format in the workflow functions
+- **Prompts**: Modify templates in `prompts.py` to adjust agent behavior
+- **Tree Depth**: Configure maximum tree depth for query decomposition
+- **Model Selection**: Choose different LLM models (all agents use the same model)
+- **Memory System**: Customize memory storage and retrieval strategies
 
 ## Testing and Evaluation
 
-The workflow includes tools for testing and evaluation:
+The system includes comprehensive testing:
 
-- **Test Cases**: Sample test cases are included in the notebook
-- **Batch Testing**: Functions for running multiple tests and collecting results
-- **Error Analysis**: Detailed error logging for debugging
+- **Unit Tests**: Individual tests for each agent and component
+- **Integration Tests**: End-to-end workflow testing
+- **BIRD Dataset Testing**: Evaluation on standard benchmarks
+- **Memory Tracing**: Detailed logging of agent decisions and memory state
 
 ## Dependencies
 
-- **Autogen**: For creating and managing the agent-based workflow
+- **Autogen**: For creating and managing the agent-based system
 - **SQLite**: For executing and testing SQL queries
-- **OpenAI API**: For language model access through Autogen
+- **OpenAI API**: For language model access
+- **Pydantic**: For data validation and type safety
+- **XML parsing**: For structured agent responses

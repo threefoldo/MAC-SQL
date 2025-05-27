@@ -22,6 +22,7 @@ from memory_content_types import (
     QueryNode, QueryMapping, TableMapping, ColumnMapping, JoinMapping,
     TableSchema, ColumnInfo, NodeStatus
 )
+from prompts import SQL_CONSTRAINTS
 
 
 class SchemaLinkerAgent(BaseMemoryAgent):
@@ -45,12 +46,17 @@ class SchemaLinkerAgent(BaseMemoryAgent):
     
     def _build_system_message(self) -> str:
         """Build the system message for schema linking"""
-        return """You are a schema linking expert for text-to-SQL conversion. Your job is to:
+        return f"""You are a schema linking expert for text-to-SQL conversion. Your job is to:
 
 1. Analyze the query intent to understand data requirements
 2. Select ONLY the necessary tables and columns FROM THE PROVIDED SCHEMA
 3. Identify join relationships between selected tables
 4. Map schema elements to their purpose in the query
+
+## SQL Generation Constraints to Keep in Mind
+{SQL_CONSTRAINTS}
+
+When selecting schema elements, consider these constraints to ensure the SQL generator can create optimal queries.
 
 CRITICAL RULES:
 - Read the database_schema XML below carefully - it contains ALL available tables and columns
@@ -60,24 +66,61 @@ CRITICAL RULES:
 - If you cannot find a needed table/column, state this clearly instead of guessing
 - The schema is provided in the 'full_schema' field below - this is your ONLY source of truth for table and column names
 
-When analyzing, consider:
-- The current node's intent and complexity
-- Any existing mapping, SQL, or errors from previous attempts
-- Parent node context (if this is a sub-query)
-- Sibling nodes (if they exist) to ensure consistency
-- Recent errors and revisions to avoid repeating mistakes
+IMPORTANT: Examine ALL provided context carefully:
+
+1. **current_node**: Contains complete node information including:
+   - intent: What query needs to be answered
+   - mapping: Any existing schema mapping (if this is a retry)
+   - sql: Previously generated SQL (if any)
+   - executionResult: Results from SQL execution including data, rowCount, and errors
+   - status: Current node status
+
+2. **node_history**: Complete history of operations on this node
+   - Look for patterns of what has been tried
+   - Identify what failed and why
+
+3. **sql_evaluation_analysis**: If present, contains:
+   - answers_intent: Whether previous SQL answered the query
+   - result_quality: Quality assessment (excellent/good/acceptable/poor)
+   - issues: Specific problems identified
+   - suggestions: Recommendations for improvement
+
+**CRITICAL for retry attempts (when node has executionResult or sql):**
+- If executionResult.error exists: Fix the SQL error (wrong table/column names, syntax)
+- If executionResult.rowCount is 0: The query returned no results - try different approach:
+  - **EXAMINE SAMPLE DATA CAREFULLY** - Look at the <sample_data> section in the schema
+  - Check actual values in sample data to understand:
+    * Exact string formats and casing (e.g., "New York" vs "new york" vs "NEW YORK")
+    * Date formats used in the database
+    * Common patterns or prefixes in IDs
+    * Whether numeric values are stored as strings
+  - Use LIKE '%value%' for partial matches instead of exact equality
+  - Consider case-insensitive comparisons (LOWER() or UPPER())
+  - Try different column filters based on sample data patterns
+  - Explore related tables that might have the data
+- If result_quality is 'poor' or 'acceptable': Address the specific issues listed
+
+DO NOT repeat the same mapping that failed. Learn from:
+- Previous SQL errors
+- Zero result issues
+- Evaluation feedback
 
 Be minimal but complete:
-- Only include tables and columns that are absolutely necessary
-- Think about implicit requirements (e.g., joins need key columns)
-- Use sample data to verify your selections make sense
-- Consider data types and constraints
-- Learn from any previous errors on this node
+- Only include necessary tables and columns
+- Use sample data to verify your selections
+- Consider implicit requirements (joins need key columns)
 
-If this is a revision (existing_mapping or recent_errors present):
-- Understand what went wrong in the previous attempt
-- Fix the specific issues while keeping what worked
-- Explain what you're changing and why
+When this is a retry, explain:
+- What went wrong before
+- What you're changing
+- Why the new approach should work
+
+**SAMPLE DATA USAGE:**
+The schema includes <sample_data> sections showing actual database values. When dealing with:
+- Zero results: Compare your filter values against sample data
+- String matching: Check exact casing and format in samples
+- Date filtering: Use the exact date format shown in samples
+- ID patterns: Look for prefixes or formatting in sample IDs
 
 Output your analysis in this XML format:
 
@@ -141,12 +184,17 @@ Output your analysis in this XML format:
         # Convert NodeOperation objects to dictionaries
         history_dicts = [op.to_dict() for op in history] if history else []
         
-        # Build context with all node information as a single string
+        # Get SQL evaluation analysis if available
+        analysis_key = f"node_{current_node_id}_analysis"
+        evaluation_analysis = await self.memory.get(analysis_key)
+        
+        # Build context with ALL node information - let the prompt guide how to use it
         context = {
             "current_node": json.dumps(node_dict, indent=2),
             "parent_node": json.dumps(parent_info, indent=2) if parent_info else None,
             "sibling_nodes": json.dumps(siblings_info, indent=2) if siblings_info else None,
-            "node_history": json.dumps(history_dicts[-5:], indent=2) if history_dicts else None,  # Last 5 operations
+            "node_history": json.dumps(history_dicts, indent=2) if history_dicts else None,  # ALL history
+            "sql_evaluation_analysis": json.dumps(evaluation_analysis, indent=2) if evaluation_analysis else None,
             "full_schema": await self._get_full_schema_xml()
         }
         
@@ -229,9 +277,7 @@ Output your analysis in this XML format:
                     self.logger.info("="*60)
                     self.logger.info(f"Updated node {node_id} with schema mapping")
                 else:
-                    # Store mapping in memory for other uses
-                    await memory.set("last_schema_mapping", mapping.to_dict())
-                    self.logger.info(f"Stored schema mapping in memory: {mapping.to_dict()}")
+                    self.logger.warning("No node_id found to update with schema mapping")
                 
         except Exception as e:
             self.logger.error(f"Error parsing schema linking results: {str(e)}", exc_info=True)

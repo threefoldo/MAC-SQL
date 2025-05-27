@@ -22,6 +22,7 @@ from memory_content_types import (
     QueryNode, QueryMapping, TableMapping, ColumnMapping,
     CombineStrategy, CombineStrategyType, NodeStatus
 )
+from prompts import SUBQ_PATTERN, SQL_CONSTRAINTS
 
 
 class QueryAnalyzerAgent(BaseMemoryAgent):
@@ -46,7 +47,7 @@ class QueryAnalyzerAgent(BaseMemoryAgent):
     
     def _build_system_message(self) -> str:
         """Build the system message for query analysis"""
-        return """You are a query analyzer for text-to-SQL conversion. Your job is to:
+        return f"""You are a query analyzer for text-to-SQL conversion. Your job is to:
 
 1. Analyze the user's query to understand their intent
 2. Identify which tables and columns are needed
@@ -57,6 +58,17 @@ class QueryAnalyzerAgent(BaseMemoryAgent):
 4. For complex queries, decompose them into simpler sub-queries that can be:
    - Executed independently
    - Combined to produce the final result
+
+## SQL Generation Constraints to Consider
+{SQL_CONSTRAINTS}
+
+## Decomposition Guidelines
+When decomposing complex queries:
+- Each sub-query should have a clear, single purpose
+- Sub-queries should be executable independently
+- Consider the order of execution
+- Use the pattern "Sub question N:" for clarity
+- Think about how results will be combined (JOIN, UNION, aggregate, etc.)
 
 Output your analysis in this XML format:
 
@@ -85,6 +97,12 @@ Output your analysis in this XML format:
 </analysis>
 
 For simple queries, omit the decomposition section.
+
+## Evidence Handling
+If evidence is provided:
+- Use it to understand domain-specific terminology
+- Apply any constraints or rules mentioned
+- Consider it when determining table/column mappings
 
 IMPORTANT: After your analysis, include this at the end of your response:
 <node_info>
@@ -280,6 +298,29 @@ The query tree has been created. The root node ID will be logged and should be u
                         "tables": sq_elem.findtext("tables", "").strip().split(", ")
                     }
                     decomposition["subqueries"].append(subquery)
+                
+                # If no subqueries found, try to parse from text using the pattern
+                if not decomposition["subqueries"] and SUBQ_PATTERN:
+                    # Look for "Sub question N:" pattern in the output
+                    matches = re.finditer(SUBQ_PATTERN, output)
+                    for i, match in enumerate(matches, 1):
+                        # Extract text after the match until next sub question or end
+                        start = match.end()
+                        next_match = re.search(SUBQ_PATTERN, output[start:])
+                        end = start + next_match.start() if next_match else len(output)
+                        
+                        sub_text = output[start:end].strip()
+                        if sub_text:
+                            # Try to extract intent from the sub-question text
+                            intent_match = re.search(r'^([^.!?]+[.!?])', sub_text)
+                            intent = intent_match.group(1) if intent_match else sub_text[:100]
+                            
+                            decomposition["subqueries"].append({
+                                "id": str(i),
+                                "intent": intent.strip(),
+                                "description": sub_text[:200],
+                                "tables": []  # Will be determined by schema linker
+                            })
                 
                 # Parse combination strategy
                 comb_elem = decomp_elem.find("combination")

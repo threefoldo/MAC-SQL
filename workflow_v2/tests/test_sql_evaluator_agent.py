@@ -11,6 +11,10 @@ from pathlib import Path
 import sys
 import logging
 from typing import Dict, List, Optional, Any, Tuple
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Add parent directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent / 'src'))

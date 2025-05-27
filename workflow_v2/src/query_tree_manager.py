@@ -66,6 +66,13 @@ class QueryTreeManager:
         tree = await self.get_tree()
         return tree.get("rootId") if tree else None
     
+    async def get_root_node(self) -> Optional[QueryNode]:
+        """Get the root node."""
+        root_id = await self.get_root_id()
+        if root_id:
+            return await self.get_node(root_id)
+        return None
+    
     async def get_current_node_id(self) -> Optional[str]:
         """Get the current node ID."""
         tree = await self.get_tree()
