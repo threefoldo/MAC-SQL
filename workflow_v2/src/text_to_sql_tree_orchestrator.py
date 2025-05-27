@@ -26,11 +26,12 @@ from database_schema_manager import DatabaseSchemaManager
 from node_history_manager import NodeHistoryManager
 from schema_reader import SchemaReader
 
-# All 4 agents
+# All 4 agents + task status checker
 from query_analyzer_agent import QueryAnalyzerAgent
 from schema_linker_agent import SchemaLinkerAgent
 from sql_generator_agent import SQLGeneratorAgent
 from sql_evaluator_agent import SQLEvaluatorAgent
+from task_status_checker import TaskStatusChecker
 
 # Memory types
 from memory_content_types import (
@@ -58,7 +59,8 @@ class TextToSQLTreeOrchestrator:
                  data_path: str,
                  tables_json_path: str,
                  dataset_name: str = "bird",
-                 llm_config: Optional[Dict[str, Any]] = None):
+                 llm_config: Optional[Dict[str, Any]] = None,
+                 max_steps: int = 100):
         """
         Initialize the text-to-SQL tree orchestrator.
         
@@ -67,10 +69,12 @@ class TextToSQLTreeOrchestrator:
             tables_json_path: Path to the tables JSON file
             dataset_name: Name of the dataset (bird, spider, etc.)
             llm_config: Configuration for the LLM
+            max_steps: Maximum number of coordinator steps before stopping (default: 100)
         """
         self.data_path = data_path
         self.tables_json_path = tables_json_path
         self.dataset_name = dataset_name
+        self.max_steps = max_steps
         
         # Default LLM configuration
         self.llm_config = llm_config or {
@@ -99,6 +103,9 @@ class TextToSQLTreeOrchestrator:
         self.schema_linker = SchemaLinkerAgent(self.memory, self.llm_config)
         self.sql_generator = SQLGeneratorAgent(self.memory, self.llm_config)
         self.sql_evaluator = SQLEvaluatorAgent(self.memory, self.llm_config)
+        
+        # Initialize TaskStatusChecker (no LLM config needed)
+        self.task_status_checker = TaskStatusChecker(self.memory)
         
         # Initialize coordinator
         self.coordinator = None
@@ -133,72 +140,61 @@ class TextToSQLTreeOrchestrator:
         
         coordinator = AssistantAgent(
             name="coordinator",
-            system_message="""You coordinate a text-to-SQL tree processing system using 4 specialized agents.
+            system_message="""You are a smart orchestrator for a text-to-SQL workflow.
 
-Your agents:
-1. query_analyzer - Analyzes user queries and creates query trees
-2. schema_linker - Links query intent to database schema
-3. sql_generator - Generates SQL from linked schema
-4. sql_evaluator - Executes and evaluates SQL results
+Your job is to:
+1. Examine node status and decide which tool to call
+2. Call tools based on what each node needs
+3. Say TERMINATE when all nodes are complete
 
-Tree Processing:
-1. Call query_analyzer with the user's query
-   - This creates a query tree and stores the node ID in memory
-
-2. Call schema_linker with: "Link query to database schema"
-   - The agent will automatically use the node ID from memory
-
-3. Call sql_generator with: "Generate SQL query"
-   - The agent will automatically use the node ID from memory
-
-4. Call sql_evaluator with: "Analyze SQL execution results"
-   - The agent will automatically use the node ID from memory
-   - CRITICAL: After calling, CHECK THE LOGS for quality assessment
-
-5. CRITICAL - Understanding sql_evaluator results:
-   - Agent tools return completion status, NOT evaluation quality
-   - You MUST check the logs after sql_evaluator for these indicators:
-     * "Result quality: EXCELLENT" or "Result quality: GOOD" → proceed
-     * "Result quality: ACCEPTABLE" → must retry with improvements  
-     * "Result quality: POOR" → significant issues, must fix
-     * "NODE NEEDS IMPROVEMENT" → do not proceed, fix the issues
-   - DO NOT assume success just because the tool call completed
-
-6. Node progression and tree completion:
-   - The sql_evaluator will automatically progress to the next node ONLY when quality is good
-   - If quality is not good, the current node remains active for retry
-   - For complex queries with multiple nodes:
-     * Each child node must be processed completely (good quality SQL)
-     * Only after all children are complete will it move to parent
-     * Parent node combines results from children
-   - The tree processing is ONLY complete when ALL nodes have good quality
-
-7. TERMINATION RULES - CRITICAL:
-   - DO NOT terminate just because agents completed without errors
-   - DO NOT provide final answers if any node has poor/acceptable quality
-   - Only say "TERMINATE" when:
-     * You see "✅ TREE COMPLETE" in the logs
-     * ALL nodes show "Result quality: GOOD" or "EXCELLENT" 
-     * No "NODE NEEDS IMPROVEMENT" messages in recent logs
-   - Before terminating, verify ALL nodes have good SQL results
-
-8. For quality issues:
-   - "acceptable" quality means retry is needed - DO NOT terminate
-   - "poor" quality means significant issues - analyze and fix
-   - Only "good" or "excellent" quality allows progression
-   - Common fixes:
-     * Wrong tables? → retry schema_linker with guidance
-     * Bad SQL? → retry sql_generator with error details
-     * Missing data? → check if schema linking was complete
+Available tools:
+- query_analyzer: Breaks down the user's query into a tree structure
+- schema_linker: Links the current node to database schema (ALWAYS call this before generating SQL)
+- sql_generator: Generates SQL for the current node
+- sql_evaluator: Executes and evaluates SQL for the current node
+- task_status_checker: Tells you the current node status and what needs to be done
 
 IMPORTANT: 
-- Always check evaluation logs before making decisions
-- This is a tree structure - ensure every branch is complete
-- The agents automatically track the current node ID in memory
-- When you have correct SQL with good results for ALL nodes, provide a final answer and say "TERMINATE" """,
+- Tools operate on the "current node" automatically - the system tracks which node to work on.
+- All tools require a 'task' parameter. Always call tools with task="current task description"
+
+DECISION LOGIC based on node status:
+1. No tree exists → call query_analyzer with the user's query as task
+2. Node has no SQL → ALWAYS call schema_linker first with task="link schema for current node", then sql_generator
+3. Node has bad SQL (evaluation showed poor quality) → call schema_linker with task="relink schema with fixes", then sql_generator with task="regenerate SQL with fixes"
+4. Node has SQL but not evaluated → call sql_evaluator with task="evaluate SQL for current node"
+5. After any evaluation → call task_status_checker with task="check task status"
+
+CRITICAL: Even if query_analyzer creates some mapping, you MUST still call schema_linker before sql_generator. The mapping from query_analyzer is not sufficient for SQL generation.
+
+The task_status_checker will tell you:
+- Current node status (what it has/needs)
+- Quality of results (if evaluated)
+- ACTION directive:
+  - "ACTION: PROCESS NODE" → Node needs work (always schema_linker then sql_generator)
+  - "ACTION: RETRY NODE" → Node has poor results (schema_linker then sql_generator again)
+  - "ACTION: TASK COMPLETE" → All nodes done, say TERMINATE
+  - "ACTION: ERROR" → Something went wrong
+
+WORKFLOW:
+1. Start: call query_analyzer with the query
+2. Call task_status_checker to understand current state
+3. Based on the status report:
+   - If node needs SQL → ALWAYS: schema_linker first, then sql_generator
+   - If SQL needs retry → ALWAYS: schema_linker first, then sql_generator
+   - If SQL not evaluated → sql_evaluator
+   - After evaluation → task_status_checker
+4. Repeat until task_status_checker says "TASK COMPLETE"
+
+Remember: 
+- ALWAYS call schema_linker before sql_generator (even on retries)
+- Nodes can be retried if results are poor
+- SQL can be regenerated if evaluation shows issues
+- Always check status after evaluation to determine next steps""",
             model_client=coordinator_client,
             tools=[self.query_analyzer.get_tool(), self.schema_linker.get_tool(), 
-                   self.sql_generator.get_tool(), self.sql_evaluator.get_tool()]
+                   self.sql_generator.get_tool(), self.sql_evaluator.get_tool(),
+                   self.task_status_checker.get_tool()]
         )
         
         return coordinator
@@ -206,7 +202,8 @@ IMPORTANT:
     async def process_query(self, 
                            query: str, 
                            db_name: str,
-                           task_id: Optional[str] = None) -> Dict[str, Any]:
+                           task_id: Optional[str] = None,
+                           evidence: Optional[str] = None) -> Dict[str, Any]:
         """
         Process a text-to-SQL query through the complete tree structure.
         
@@ -214,6 +211,7 @@ IMPORTANT:
             query: The natural language query
             db_name: Name of the database to query
             task_id: Optional task ID (auto-generated if not provided)
+            evidence: Optional evidence/hints for the query
             
         Returns:
             Dictionary containing tree processing results
@@ -223,18 +221,20 @@ IMPORTANT:
             import time
             task_id = f"tree_{int(time.time())}"
         
-        # Initialize task
-        await self.task_manager.initialize(task_id, query, db_name)
+        # Initialize task with evidence
+        await self.task_manager.initialize(task_id, query, db_name, evidence)
         await self.initialize_database(db_name)
         
         self.logger.info(f"Processing query: {query}")
         self.logger.info(f"Database: {db_name}")
         self.logger.info(f"Task ID: {task_id}")
+        if evidence:
+            self.logger.info(f"Evidence: {evidence}")
         
         return await self._process_with_coordinator(query)
     
     async def _process_with_coordinator(self, query: str) -> Dict[str, Any]:
-        """Process query using the coordinator agent."""
+        """Process query using the coordinator agent with max steps control."""
         if not self.coordinator:
             self.coordinator = self._create_coordinator()
         
@@ -245,16 +245,54 @@ IMPORTANT:
             termination_condition=termination_condition
         )
         
-        # Run the tree processing
+        # Run the tree processing with step control
         self.logger.info("Starting coordinator-based tree processing")
         stream = team.run_stream(task=query)
         
+        # Process messages with loop control
+        step_count = 0
+        max_steps = self.max_steps  # Use configurable safety limit
         messages = []
+        last_message_content = None  # Track duplicate messages
+        duplicate_count = 0
+        
         async for message in stream:
             messages.append(message)
+            
+            # Check for duplicate messages
+            current_content = str(message.content) if hasattr(message, 'content') else None
+            if current_content and current_content == last_message_content:
+                duplicate_count += 1
+                if duplicate_count >= 3:  # Stop after 3 identical messages
+                    self.logger.warning("Detected repeated messages. Stopping to prevent infinite loop.")
+                    break
+            else:
+                duplicate_count = 0
+                last_message_content = current_content
+            
+            # Process coordinator messages
             if hasattr(message, 'source') and message.source == 'coordinator':
-                if hasattr(message, 'content') and isinstance(message.content, str):
-                    self.logger.debug(f"Coordinator: {message.content[:100]}...")
+                step_count += 1
+                
+                # Check max steps
+                if step_count >= max_steps:
+                    self.logger.warning(f"Reached maximum steps ({max_steps}). Stopping to prevent infinite loop.")
+                    break
+                
+                if hasattr(message, 'content'):
+                    if isinstance(message.content, str):
+                        self.logger.debug(f"Coordinator step {step_count}: {message.content[:100]}...")
+                        
+                        # Check for termination
+                        if "TERMINATE" in message.content:
+                            self.logger.info(f"Workflow completed successfully after {step_count} steps")
+                            break
+        
+        # Log completion status
+        if step_count >= max_steps:
+            self.logger.error(f"Workflow stopped after reaching max steps limit ({max_steps})")
+        elif duplicate_count >= 3:
+            self.logger.error("Workflow stopped due to repeated messages (possible infinite loop)")
         
         # Get final results
         return await self._get_tree_results()
@@ -268,9 +306,12 @@ IMPORTANT:
         results = {
             "query_tree": tree,
             "nodes": {},
-            "final_results": [],
+            "final_result": None,  # Just the root node's SQL
             "tree_complete": await self.memory.get("tree_complete", False)
         }
+        
+        # Get root node ID
+        root_id = tree.get("rootId")
         
         # Process each node
         for node_id, node_data in tree["nodes"].items():
@@ -291,12 +332,11 @@ IMPORTANT:
                 node_result["analysis"] = analysis
             
             results["nodes"][node_id] = node_result
-            
-            # Add to final results if it has SQL and good quality
-            if node_data.get("sql") and analysis:
-                quality = analysis.get("result_quality", "").lower()
-                if quality in ["excellent", "good"]:
-                    results["final_results"].append(node_result)
+        
+        # Final result is simply the root node's SQL (regardless of quality)
+        if root_id and root_id in tree["nodes"]:
+            root_sql = tree["nodes"][root_id].get("sql")
+            results["final_result"] = root_sql
         
         return results
     
@@ -349,11 +389,11 @@ IMPORTANT:
                 print(f"  Quality: {quality.upper()}")
     
     async def display_final_results(self) -> None:
-        """Display the final SQL and execution results."""
+        """Display the final SQL from the root node."""
         results = await self._get_tree_results()
         
         print("\n" + "="*60)
-        print("FINAL RESULTS")
+        print("FINAL RESULT")
         print("="*60)
         
         if results.get("tree_complete"):
@@ -361,16 +401,22 @@ IMPORTANT:
         else:
             print("⚠️  Tree Processing Status: INCOMPLETE")
         
-        # Display results for nodes with good quality
-        if results.get("final_results"):
-            for node_result in results["final_results"]:
-                print(f"\nNode: {node_result['node_id']}")
-                print(f"Intent: {node_result.get('intent', 'N/A')}")
-                print(f"\nSQL:\n{node_result.get('sql', 'N/A')}")
+        # Display the final SQL (root node's SQL)
+        final_sql = results.get("final_result")
+        if final_sql:
+            print(f"\nFinal SQL:\n{final_sql}")
+            
+            # Get root node for additional info
+            tree = results.get("query_tree", {})
+            root_id = tree.get("rootId")
+            if root_id and root_id in results["nodes"]:
+                root_node = results["nodes"][root_id]
                 
-                if node_result.get('execution_result'):
-                    exec_result = node_result['execution_result']
+                # Show execution result if available
+                if root_node.get('execution_result'):
+                    exec_result = root_node['execution_result']
                     print(f"\nExecution Result:")
+                    print(f"  Status: {exec_result.get('status', 'N/A')}")
                     print(f"  Rows returned: {exec_result.get('rowCount', 0)}")
                     
                     if exec_result.get('data') and len(exec_result['data']) > 0:
@@ -378,14 +424,13 @@ IMPORTANT:
                         for i, row in enumerate(exec_result['data'][:5]):
                             print(f"  {row}")
                 
-                if node_result.get('analysis'):
-                    analysis = node_result['analysis']
-                    print(f"\nEvaluation:")
-                    print(f"  Answers intent: {analysis.get('answers_intent', 'N/A').upper()}")
+                # Show quality assessment if available
+                if root_node.get('analysis'):
+                    analysis = root_node['analysis']
+                    print(f"\nQuality Assessment:")
                     print(f"  Result quality: {analysis.get('result_quality', 'N/A').upper()}")
-                    print(f"  Summary: {analysis.get('result_summary', 'N/A')}")
         else:
-            print("\nNo nodes with good quality results found.")
+            print("\nNo final SQL available. Root node has not generated SQL yet.")
 
 
 # Convenience function for quick tree orchestration execution
@@ -393,7 +438,8 @@ async def run_text_to_sql(query: str,
                          db_name: str,
                          data_path: str = "/home/norman/work/text-to-sql/MAC-SQL/data/bird",
                          dataset_name: str = "bird",
-                         display_results: bool = True) -> Dict[str, Any]:
+                         display_results: bool = True,
+                         evidence: Optional[str] = None) -> Dict[str, Any]:
     """
     Quick function to run a text-to-SQL tree orchestration.
     
@@ -403,6 +449,7 @@ async def run_text_to_sql(query: str,
         data_path: Path to database files
         dataset_name: Dataset name (bird, spider, etc.)
         display_results: Whether to display results
+        evidence: Optional evidence/hints for the query
         
     Returns:
         Dictionary containing tree processing results
@@ -427,7 +474,8 @@ async def run_text_to_sql(query: str,
     # Process query
     results = await orchestrator.process_query(
         query=query,
-        db_name=db_name
+        db_name=db_name,
+        evidence=evidence
     )
     
     # Display results if requested

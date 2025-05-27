@@ -95,20 +95,29 @@ The query tree has been created. The root node ID will be logged and should be u
         """Read context from memory before analyzing the query"""
         context = {}
         
-        # Add the query to context
-        context["query"] = task
+        # Get task context which contains the actual query and evidence
+        task_context = await self.task_manager.get()
+        if task_context:
+            # Get query from task context (the actual question)
+            context["query"] = task_context.originalQuery
+            context["database_id"] = task_context.databaseName
+            
+            # Get evidence if available
+            if task_context.evidence:
+                context["evidence"] = task_context.evidence
+        else:
+            # Fallback to using task parameter if no task context
+            context["query"] = task
+            self.logger.warning("No task context found, using task parameter as query")
         
         # Get database schema
         schema_xml = await self._get_schema_xml()
         context["schema"] = schema_xml
         
-        # Get any existing task context
-        task_context = await self.task_manager.get()
-        if task_context:
-            context["database_id"] = task_context.databaseName
-        
         self.logger.info(f"Query analyzer context prepared with schema length: {len(schema_xml)}")
-        self.logger.info(f"query: {context['query']} database: {context['database_id']}")
+        self.logger.info(f"query: {context['query']} database: {context.get('database_id', 'N/A')}")
+        if "evidence" in context:
+            self.logger.info(f"evidence: {context['evidence']}")
         
         return context
     
@@ -125,8 +134,12 @@ The query tree has been created. The root node ID will be logged and should be u
             analysis = self._parse_analysis_xml(last_message)
             
             if analysis:
-                # Create the root node with the analyzed intent
-                root_id = await self.tree_manager.initialize(analysis["intent"])
+                # Get evidence from task context
+                task_context = await self.task_manager.get()
+                evidence = task_context.evidence if task_context else None
+                
+                # Create the root node with the analyzed intent and evidence
+                root_id = await self.tree_manager.initialize(analysis["intent"], evidence)
                 
                 # Record the creation in history
                 await self.history_manager.record_create(

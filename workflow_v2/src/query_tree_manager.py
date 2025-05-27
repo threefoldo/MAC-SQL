@@ -25,12 +25,13 @@ class QueryTreeManager:
         self.memory = memory
         self.logger = logging.getLogger(self.__class__.__name__)
     
-    async def initialize(self, root_intent: str) -> str:
+    async def initialize(self, root_intent: str, evidence: Optional[str] = None) -> str:
         """
         Initialize a query tree with a root node.
         
         Args:
             root_intent: The intent for the root node (usually the original query)
+            evidence: Optional evidence/hints for the query
             
         Returns:
             The root node ID
@@ -39,7 +40,8 @@ class QueryTreeManager:
         root_node = QueryNode(
             nodeId=root_id,
             intent=root_intent,
-            mapping=QueryMapping()
+            mapping=QueryMapping(),
+            evidence=evidence
         )
         
         query_tree = {
@@ -50,6 +52,8 @@ class QueryTreeManager:
         
         await self.memory.set("queryTree", query_tree)
         self.logger.info(f"Initialized query tree with root node {root_id}")
+        if evidence:
+            self.logger.info(f"Root node includes evidence: {evidence}")
         
         return root_id
     

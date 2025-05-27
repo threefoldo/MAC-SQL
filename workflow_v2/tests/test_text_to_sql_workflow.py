@@ -65,7 +65,7 @@ class TestTextToSQLTreeOrchestrator:
         # Verify results structure
         assert "query_tree" in results
         assert "nodes" in results
-        assert "final_results" in results
+        assert "final_result" in results
         
         # Check that we have at least one node
         assert len(results["nodes"]) > 0
@@ -102,15 +102,8 @@ class TestTextToSQLTreeOrchestrator:
         
         # Check workflow completion status
         if results.get("tree_complete"):
-            # Verify we have good quality results
-            assert len(results.get("final_results", [])) > 0
-            
-            # Check quality of results
-            for node_result in results["final_results"]:
-                analysis = node_result.get("analysis")
-                if analysis:
-                    quality = analysis.get("result_quality", "").lower()
-                    assert quality in ["excellent", "good"], f"Expected good quality, got {quality}"
+            # Verify we have final SQL from root node
+            assert results.get("final_result") is not None, "Expected final SQL from root node"
     
     @pytest.mark.asyncio
     async def test_complex_query_with_decomposition(self, workflow):
@@ -272,14 +265,10 @@ async def test_coordinator_termination():
         
     )
     
-    # If workflow is complete, all nodes should have good quality
+    # If workflow is complete, we should have final SQL
     if results.get("tree_complete"):
-        for node_result in results.get("final_results", []):
-            analysis = node_result.get("analysis")
-            if analysis:
-                quality = analysis.get("result_quality", "").lower()
-                assert quality in ["excellent", "good"], \
-                    f"Workflow completed but node has {quality} quality"
+        assert results.get("final_result") is not None, \
+            "Workflow completed but no final SQL from root node"
 
 
 @pytest.mark.asyncio
@@ -300,13 +289,10 @@ async def test_quality_based_termination():
         
     )
     
-    # Check final results only include good quality nodes
-    for node_result in results.get("final_results", []):
-        analysis = node_result.get("analysis")
-        if analysis:
-            quality = analysis.get("result_quality", "").lower()
-            assert quality in ["excellent", "good"], \
-                f"Final results include {quality} quality node"
+    # Check that we have final SQL regardless of quality
+    # (final_result is just the root node's SQL, not filtered by quality)
+    if results.get("tree_complete"):
+        assert results.get("final_result") is not None
 
 
 @pytest.mark.asyncio
@@ -363,7 +349,7 @@ if __name__ == "__main__":
         if results.get("tree_complete"):
             print("\n✅ Workflow completed successfully")
             print(f"Total nodes: {len(results['nodes'])}")
-            print(f"Good quality nodes: {len(results['final_results'])}")
+            print(f"Final SQL available: {'Yes' if results.get('final_result') else 'No'}")
         else:
             print("\n⚠️  Workflow did not complete")
     

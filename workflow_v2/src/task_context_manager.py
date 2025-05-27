@@ -25,7 +25,7 @@ class TaskContextManager:
         self.memory = memory
         self.logger = logging.getLogger(self.__class__.__name__)
     
-    async def initialize(self, task_id: str, original_query: str, database_name: str) -> TaskContext:
+    async def initialize(self, task_id: str, original_query: str, database_name: str, evidence: Optional[str] = None) -> TaskContext:
         """
         Initialize a new task context.
         
@@ -33,6 +33,7 @@ class TaskContextManager:
             task_id: Unique identifier for the task
             original_query: The original user query
             database_name: Name of the database to query
+            evidence: Optional evidence/hints for the query
             
         Returns:
             The initialized TaskContext
@@ -42,11 +43,14 @@ class TaskContextManager:
             originalQuery=original_query,
             databaseName=database_name,
             startTime=datetime.now().isoformat(),
-            status=TaskStatus.INITIALIZING
+            status=TaskStatus.INITIALIZING,
+            evidence=evidence
         )
         
         await self.memory.set("taskContext", task_context.to_dict())
         self.logger.info(f"Initialized task context for task {task_id}")
+        if evidence:
+            self.logger.info(f"Evidence provided: {evidence}")
         
         return task_context
     
@@ -96,6 +100,11 @@ class TaskContextManager:
         """Get the current task status."""
         task_context = await self.get()
         return task_context.status if task_context else None
+    
+    async def get_evidence(self) -> Optional[str]:
+        """Get the evidence/hints for the query."""
+        task_context = await self.get()
+        return task_context.evidence if task_context else None
     
     async def is_completed(self) -> bool:
         """Check if the task is completed."""

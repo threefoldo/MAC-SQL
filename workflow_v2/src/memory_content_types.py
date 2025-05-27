@@ -53,6 +53,7 @@ class TaskContext:
     databaseName: str
     startTime: str
     status: TaskStatus
+    evidence: Optional[str] = None  # Additional information/hints for the query
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for storage."""
@@ -61,7 +62,8 @@ class TaskContext:
             'originalQuery': self.originalQuery,
             'databaseName': self.databaseName,
             'startTime': self.startTime,
-            'status': self.status.value
+            'status': self.status.value,
+            'evidence': self.evidence
         }
     
     @classmethod
@@ -72,7 +74,8 @@ class TaskContext:
             originalQuery=data['originalQuery'],
             databaseName=data['databaseName'],
             startTime=data['startTime'],
-            status=TaskStatus(data['status'])
+            status=TaskStatus(data['status']),
+            evidence=data.get('evidence')  # Optional field
         )
 
 
@@ -268,6 +271,7 @@ class QueryNode:
     executionResult: Optional[ExecutionResult] = None
     parentId: Optional[str] = None
     combineStrategy: Optional[CombineStrategy] = None
+    evidence: Optional[str] = None  # Evidence/hints for this node
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for storage."""
@@ -289,6 +293,8 @@ class QueryNode:
             result['parentId'] = self.parentId
         if self.combineStrategy is not None:
             result['combineStrategy'] = self.combineStrategy.to_dict()
+        if self.evidence is not None:
+            result['evidence'] = self.evidence
         return result
     
     @classmethod
@@ -309,6 +315,8 @@ class QueryNode:
             node.parentId = data['parentId']
         if 'combineStrategy' in data:
             node.combineStrategy = CombineStrategy.from_dict(data['combineStrategy'])
+        if 'evidence' in data:
+            node.evidence = data['evidence']
         return node
 
 
