@@ -134,7 +134,7 @@ class TextToSQLTreeOrchestrator:
         coordinator_client = OpenAIChatCompletionClient(
             model="gpt-4o",
             temperature=0.1,
-            timeout=120,
+            timeout=300,
             api_key=os.getenv("OPENAI_API_KEY")
         )
         
@@ -179,6 +179,8 @@ The task_status_checker will tell you:
 - ACTION directive:
   - "ACTION: PROCESS NODE" → Node needs work (always schema_linker then sql_generator)
   - "ACTION: RETRY NODE" → Node has poor results (schema_linker then sql_generator again)
+  - "ACTION: RECONSIDER DECOMPOSITION" → Node failed after 3 retries, query_analyzer needs to re-decompose from parent
+  - "ACTION: QUERY UNCLEAR" → Query is fundamentally unclear, needs clarification
   - "ACTION: TASK COMPLETE" → All nodes done, say TERMINATE
   - "ACTION: ERROR" → Something went wrong
 
@@ -189,12 +191,21 @@ WORKFLOW:
    - If node needs SQL → ALWAYS: schema_linker first, then sql_generator
    - If SQL needs retry → ALWAYS: schema_linker first, then sql_generator
    - If SQL not evaluated → sql_evaluator
+   - If reconsider decomposition → call query_analyzer with task="reconsider query decomposition from parent node"
+   - If query unclear → say TERMINATE with message about unclear query
    - After evaluation → task_status_checker
 4. Repeat until task_status_checker says "TASK COMPLETE"
 
+RETRY STRATEGY:
+- Each node gets up to 3 retries (automatic via context awareness)
+- After 3 failed attempts, task_status_checker will recommend reconsidering decomposition
+- When reconsidering, the system moves to parent node for re-analysis
+- This prevents infinite loops on fundamentally flawed decompositions
+
 Remember: 
 - ALWAYS call schema_linker before sql_generator (even on retries)
-- Nodes can be retried if results are poor
+- Nodes can be retried if results are poor (max 3 times)
+- After 3 retries, the decomposition itself may need adjustment
 - SQL can be regenerated if evaluation shows issues
 - Always check status after evaluation to determine next steps""",
             model_client=coordinator_client,

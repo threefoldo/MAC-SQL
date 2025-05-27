@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from typing import Union
 from keyvalue_memory import KeyValueMemory
 from query_tree_manager import QueryTreeManager
+from node_history_manager import NodeHistoryManager
 from memory_content_types import NodeStatus
 
 
@@ -45,7 +46,9 @@ class TaskStatusChecker(BaseTool):
         )
         self.memory = memory
         self.tree_manager = QueryTreeManager(memory)
+        self.history_manager = NodeHistoryManager(memory)
         self.logger = logging.getLogger(self.__class__.__name__)
+        self.MAX_RETRIES = 3  # Maximum retry attempts per node
     
     async def analyze_tree(self) -> Dict[str, Any]:
         """Analyze the tree and return status information"""
@@ -103,6 +106,42 @@ class TaskStatusChecker(BaseTool):
             tree_analysis["node_details"][node_id] = node_info
         
         # Determine the recommended next node
+        # First check if current node needs retry (prioritize current node)
+        if current_node_id and current_node_id in tree_analysis["node_details"]:
+            current_node_info = tree_analysis["node_details"][current_node_id]
+            
+            # Check if current node is in processed_poor list
+            for poor_node in tree_analysis["processed_poor"]:
+                if poor_node["node_id"] == current_node_id:
+                    # Check retry count
+                    retry_count = await self.history_manager.get_node_retry_count(current_node_id)
+                    
+                    if retry_count >= self.MAX_RETRIES:
+                        # Max retries reached - move to parent node for query re-decomposition
+                        full_node = tree_analysis["full_nodes"].get(current_node_id, {})
+                        parent_id = full_node.get("parentId")
+                        
+                        if parent_id:
+                            tree_analysis["recommended_node"] = parent_id
+                            tree_analysis["recommended_action"] = "reconsider_decomposition"
+                            tree_analysis["retry_count"] = retry_count
+                            tree_analysis["failed_node"] = current_node_id
+                            self.logger.warning(f"Node {current_node_id} has reached max retries ({retry_count}). Moving to parent {parent_id} for re-decomposition")
+                        else:
+                            # This is root node with max retries - fundamental issue with query
+                            tree_analysis["recommended_node"] = current_node_id
+                            tree_analysis["recommended_action"] = "query_unclear"
+                            tree_analysis["retry_count"] = retry_count
+                            self.logger.error(f"Root node {current_node_id} has reached max retries ({retry_count}). Query may be unclear or impossible")
+                    else:
+                        # Can still retry
+                        tree_analysis["recommended_node"] = current_node_id
+                        tree_analysis["recommended_action"] = "retry"
+                        tree_analysis["retry_count"] = retry_count
+                        self.logger.info(f"Current node {current_node_id} has poor quality - recommending retry (attempt {retry_count + 1}/{self.MAX_RETRIES})")
+                    
+                    return tree_analysis  # Early return to prioritize current node
+        
         if tree_analysis["unprocessed"]:
             # Prioritize nodes that need processing
             # For complex queries, process children before parent
@@ -117,7 +156,7 @@ class TaskStatusChecker(BaseTool):
                 tree_analysis["recommended_action"] = "process"
         
         elif tree_analysis["processed_poor"]:
-            # Nodes that need improvement
+            # Other nodes that need improvement (if current node wasn't poor)
             tree_analysis["recommended_node"] = tree_analysis["processed_poor"][0]["node_id"]
             tree_analysis["recommended_action"] = "retry"
         
@@ -227,7 +266,22 @@ CURRENT NODE CONTENT:
             node_id = tree_analysis["recommended_node"]
             node_info = tree_analysis["node_details"].get(node_id, {})
             quality = node_info.get("quality", "poor")
-            action = f"ACTION: RETRY NODE: {node_id} has {quality} quality results and needs improvement"
+            retry_count = tree_analysis.get("retry_count", 0)
+            if node_id == current_node_id:
+                action = f"ACTION: RETRY NODE: Current node {node_id} has {quality} quality results and needs improvement (retry {retry_count + 1}/{self.MAX_RETRIES})"
+            else:
+                action = f"ACTION: RETRY NODE: {node_id} has {quality} quality results and needs improvement (changing from {current_node_id})"
+        
+        elif tree_analysis["recommended_action"] == "reconsider_decomposition":
+            parent_node_id = tree_analysis["recommended_node"]
+            failed_node_id = tree_analysis.get("failed_node", "unknown")
+            retry_count = tree_analysis.get("retry_count", 0)
+            action = f"ACTION: RECONSIDER DECOMPOSITION: Node {failed_node_id} failed after {retry_count} retries. Moving to parent node {parent_node_id}. The query decomposition may be unclear or incorrect - consider alternative approaches"
+        
+        elif tree_analysis["recommended_action"] == "query_unclear":
+            node_id = tree_analysis["recommended_node"]
+            retry_count = tree_analysis.get("retry_count", 0)
+            action = f"ACTION: QUERY UNCLEAR: Root node {node_id} failed after {retry_count} retries. The query may be ambiguous, impossible to answer, or require domain knowledge not in the schema"
         
         else:
             action = "ACTION: ERROR: Unknown tree state"

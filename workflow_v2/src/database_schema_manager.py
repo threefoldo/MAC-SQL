@@ -369,6 +369,18 @@ class DatabaseSchemaManager:
             # Build columns dictionary
             columns = {}
             
+            # Create a mapping of column names to their typical values
+            column_values_map = {}
+            for col_name, values_str in columns_val:
+                if values_str and values_str != '[]':
+                    try:
+                        import ast
+                        values = ast.literal_eval(values_str)
+                        if isinstance(values, list):
+                            column_values_map[col_name] = values
+                    except:
+                        pass
+            
             # Process each column
             for col_idx, (col_name, full_col_name, extra_desc) in enumerate(columns_desc):
                 # Get column type
@@ -389,44 +401,29 @@ class DatabaseSchemaManager:
                         }
                         break
                 
+                # Get typical values for this column
+                typical_values = column_values_map.get(col_name)
+                
                 # Create ColumnInfo
                 column_info = ColumnInfo(
                     dataType=col_type,
                     nullable=True,  # Default to nullable, can be refined later
                     isPrimaryKey=is_primary_key,
                     isForeignKey=is_foreign_key,
-                    references=references
+                    references=references,
+                    typicalValues=typical_values
                 )
                 
                 columns[col_name] = column_info
             
-            # Get sample data for this table
-            sample_data = []
-            if col_idx < len(columns_val):
-                # Extract some example values from the value string
-                for col_name, values_str in columns_val:
-                    if values_str and values_str != '[]':
-                        # Parse the values string (it's in format like "[val1, val2, ...]")
-                        try:
-                            import ast
-                            values = ast.literal_eval(values_str)
-                            if isinstance(values, list) and len(values) > 0:
-                                # Create sample rows from the first few values
-                                for i, val in enumerate(values[:3]):  # Take first 3 values
-                                    if i >= len(sample_data):
-                                        sample_data.append({})
-                                    sample_data[i][col_name] = val
-                        except:
-                            pass
-            
-            # Create TableSchema
+            # Create TableSchema without sample data (we use typicalValues instead)
             table_schema = TableSchema(
                 name=table_name,
                 columns=columns,
-                sampleData=sample_data,
+                sampleData=None,  # We use typicalValues in columns instead
                 metadata={
                     "description": f"Table {table_name} from {db_id} database",
-                    "row_count": len(columns)  # This is column count, actual row count not available
+                    "column_count": len(columns)
                 }
             )
             

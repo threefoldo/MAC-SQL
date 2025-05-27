@@ -5,8 +5,10 @@ import random
 import json
 import time
 import sqlite3
-from const import subq_pattern
 from typing import Dict, List
+
+
+subq_pattern = r"Sub question\s*\d+\s*:"
 
 
 def is_valid_date(date_str):

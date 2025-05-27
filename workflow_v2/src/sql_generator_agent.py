@@ -22,7 +22,7 @@ from memory_content_types import (
     CombineStrategy, CombineStrategyType
 )
 from utils import extract_sql_from_text
-from prompts import SQL_CONSTRAINTS, MAX_ROUND, format_refiner_template
+from prompts import SQL_CONSTRAINTS, format_refiner_template
 
 
 class SQLGeneratorAgent(BaseMemoryAgent):
@@ -52,30 +52,59 @@ class SQLGeneratorAgent(BaseMemoryAgent):
 1. **USE EXACT NAMES**: Use only table/column names from the provided mapping (CASE-SENSITIVE)
 2. **NO GUESSING**: Never modify or invent table/column names
 3. **FOLLOW CONSTRAINTS**: Apply all SQL generation constraints systematically
+4. **PREFER SIMPLICITY**: Use single-table queries when possible, avoid unnecessary joins
 
 ## Your Task
 Generate accurate SQL queries based on the provided node information.
 
-### Step 1: Parse Context
+### Step 1: Parse Context and Analyze Schema Linking
 Extract from the "current_node" JSON:
 - **intent**: The query to convert to SQL
-- **mapping**: Tables, columns, and joins to use
+- **mapping**: Tables, columns, and joins to use (preferred solution from schema linker)
+  - Pay special attention to mapping.columns[].exactValue for filter values
+  - **CRITICAL**: Check mapping.columns[].dataType to format values correctly
 - **sql**: Previous SQL (if this is a retry)
 - **executionResult**: Previous execution results and errors
 - **evidence**: Domain-specific knowledge
 
-### Step 2: Determine Scenario
+**Data Type Formatting Guide**:
+- INTEGER/INT/BIGINT: Use unquoted numbers (e.g., 1, 42, -10)
+- REAL/FLOAT/DOUBLE: Use unquoted decimals (e.g., 3.14, -0.5)
+- TEXT/VARCHAR/CHAR: Use single quotes (e.g., 'value', 'John')
+- NULL values: Use unquoted NULL keyword
+
+**Check Schema Linking Quality**:
+- Look for single_table_solution indicators in mapping
+- Verify that selected tables/columns match the intent
+- If retry: check if previous failure was due to wrong table/column selection
+
+### Step 2: Determine Scenario and Table Strategy
 **New Generation**: No previous sql in the node
+- Follow schema linker's table selection (single-table preferred)
 - Generate fresh SQL based on intent and mapping
 
 **Retry Generation**: Node has sql and executionResult
 - **NEVER generate the same SQL that failed**
+- Check if failure was due to wrong schema linking (table/column names)
+- If schema issue: trust the updated mapping from schema linker
 - Fix specific issues based on error type
 
-**Refiner Mode**: "refiner_prompt" is provided
-- Follow the refiner prompt exactly (it contains all needed context)
+**Single-Table Solution**: When mapping suggests single table
+- Avoid joins unless absolutely necessary
+- Use only the selected table and its columns
+- Check that all needed data exists in the single table
 
-### Step 3: Handle Retry Issues
+### Step 3: Handle Retry Issues (Enhanced)
+**CRITICAL for WHERE Clauses**:
+- Check mapping.columns for exactValue field - this contains the exact filter value to use
+- Use ONLY the exactValue from column mapping when available, never approximate
+- If zero results, the issue is likely wrong filter values - check if exactValue is present in mapping
+
+**Schema-Related Errors**:
+- "no such table/column" → Use exact names from latest mapping, check schema linker fixes
+- "wrong table joins" → Consider if single-table solution is possible
+- Wrong filter values → Use exact values from schema linker's column discovery
+
 **SQL Error (executionResult.error exists)**:
 - "no such table/column" → Check exact names in mapping
 - "ambiguous column" → Add table aliases  
@@ -83,18 +112,43 @@ Extract from the "current_node" JSON:
 - "division by zero" → Add NULLIF or CASE statements
 
 **Zero Results (rowCount = 0)**:
-- Replace exact matches with LIKE '%value%'
-- Try case-insensitive comparisons (LOWER/UPPER)
-- Remove restrictive WHERE conditions
-- Check if JOINs exclude all records
+- FIRST CHECK: Are you using exact values from schema linker for WHERE clauses?
+- If schema linker didn't provide exact values, request re-linking
+- Only try LIKE or case-insensitive if exact values don't work
+- Check if JOINs exclude all records (consider single-table alternative)
 
 **Poor Quality (from sql_evaluation_analysis)**:
 - Address each listed issue
 - Follow provided suggestions
+- Consider if simpler table structure could solve the problem
 
-### Step 4: Generate SQL
-**Simple Queries**: Direct SELECT with proper WHERE/ORDER BY/GROUP BY
-**Complex Queries**: Use CTEs, subqueries, or combine child node results
+### Step 4: Generate SQL with Table Preference
+**Single-Table Queries** (preferred when possible):
+- Direct SELECT from one table with proper WHERE/ORDER BY/GROUP BY
+- Use the exact column names from schema linker mapping
+- Verify all needed data exists in the single table
+
+**Multi-Table Queries** (only when necessary):
+- Use explicit JOIN syntax with table aliases
+- Ensure all joins are actually needed for the query
+- Follow the join patterns suggested by schema linker
+
+**WHERE Clause Generation**:
+- For each column in mapping.columns where usedFor="filter":
+  - Check the column's dataType field to determine proper value formatting
+  - If exactValue is provided: Format based on dataType
+    - INTEGER/INT/BIGINT/SMALLINT: Use unquoted numbers (e.g., WHERE column = 1)
+    - REAL/FLOAT/DOUBLE/NUMERIC/DECIMAL: Use unquoted numbers (e.g., WHERE column = 3.14)
+    - TEXT/VARCHAR/CHAR: Use quoted strings (e.g., WHERE column = 'value')
+    - Other types: Use quoted strings as default
+  - If no exactValue: Fall back to LIKE patterns or case-insensitive matching
+- **CRITICAL Data Type Rules**:
+  - Always check mapping.columns[].dataType for the column's data type
+  - For numeric types (INTEGER, REAL, etc.): NEVER use quotes around numbers
+  - For text types: ALWAYS use quotes around values
+  - If dataType is not provided, check evidence for hints
+  - Common mistake: Using WHERE numeric_column = '1' instead of WHERE numeric_column = 1
+
 **SQLite Specifics**: No FULL OUTER JOIN, use CAST(), proper GROUP BY
 
 ## SQL Generation Constraints
@@ -106,6 +160,9 @@ Extract from the "current_node" JSON:
   <query_type>simple|join|aggregate|subquery|complex</query_type>
   <sql>
     -- Your SQL query here
+    -- Example with correct data types:
+    -- For INTEGER column: WHERE age = 25 (no quotes)
+    -- For TEXT column: WHERE name = 'John' (with quotes)
     SELECT ... FROM ... WHERE ...
   </sql>
   <explanation>
@@ -115,6 +172,7 @@ Extract from the "current_node" JSON:
     - Assumptions made
     - Limitations
     - Changes from previous attempt (if retry)
+    - Data type formatting applied (e.g., removed quotes from numeric values)
   </considerations>
 </sql_generation>
 
@@ -226,18 +284,37 @@ For retries, explain what failed and what you changed."""
                         sql=sql
                     )
                     
-                    # User-friendly logging
+                    # Enhanced user-friendly logging
                     self.logger.info("="*60)
                     self.logger.info("SQL Generation")
                     
-                    # Get node for intent
+                    # Get node for intent and mapping details
                     node = await self.tree_manager.get_node(node_id)
                     if node:
                         self.logger.info(f"Query intent: {node.intent}")
+                        
+                        # Check for single table solution indicators
+                        if node.mapping and node.mapping.tables:
+                            table_count = len(node.mapping.tables)
+                            if table_count == 1:
+                                self.logger.info("✓ Single-table solution generated")
+                            else:
+                                self.logger.info(f"Multi-table solution ({table_count} tables)")
+                            
+                            # Show table utilization
+                            self.logger.info("Table utilization:")
+                            for table in node.mapping.tables:
+                                table_cols = [c for c in node.mapping.columns if c.table == table.name]
+                                self.logger.info(f"  - {table.name}: {len(table_cols)} columns used")
                     
-                    # Log query type
+                    # Log query type and complexity
                     if generation_result.get("query_type"):
-                        self.logger.info(f"Query type: {generation_result['query_type'].upper()}")
+                        query_type = generation_result['query_type'].upper()
+                        self.logger.info(f"Query type: {query_type}")
+                    
+                    # Check for retry indicators
+                    if node and node.sql:
+                        self.logger.info("⚠️  Retry generation (previous SQL existed)")
                     
                     # Log the generated SQL
                     self.logger.info("Generated SQL:")
@@ -250,6 +327,10 @@ For retries, explain what failed and what you changed."""
                     # Log explanation if available
                     if generation_result.get("explanation"):
                         self.logger.info(f"Explanation: {generation_result['explanation']}")
+                    
+                    # Log considerations for retries
+                    if generation_result.get("considerations"):
+                        self.logger.info(f"Considerations: {generation_result['considerations']}")
                     
                     self.logger.info("="*60)
                     self.logger.info(f"Updated node {node_id} with generated SQL")
@@ -375,18 +456,17 @@ For retries, explain what failed and what you changed."""
             self.logger.error(f"Error extracting individual tags: {str(e)}", exc_info=True)
             return None
     
-    async def generate_sql(self, node_id: str, retry_count: int = 0) -> Optional[str]:
+    async def generate_sql(self, node_id: str) -> Optional[str]:
         """
         Generate SQL for a specific query node.
         
         Args:
             node_id: The ID of the node to generate SQL for
-            retry_count: Current retry attempt number
             
         Returns:
             The generated SQL or None if failed
         """
-        self.logger.debug(f"Generating SQL for node: {node_id} (attempt {retry_count + 1}/{MAX_ROUND})")
+        self.logger.debug(f"Generating SQL for node: {node_id}")
         
         # Set the current node in QueryTreeManager
         await self.tree_manager.set_current_node_id(node_id)

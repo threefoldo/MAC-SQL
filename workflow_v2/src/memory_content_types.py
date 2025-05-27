@@ -87,6 +87,7 @@ class ColumnInfo:
     isPrimaryKey: bool
     isForeignKey: bool
     references: Optional[Dict[str, str]] = None  # {'table': str, 'column': str}
+    typicalValues: Optional[List[Any]] = None  # Common/example values for this column
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for storage."""
@@ -150,6 +151,8 @@ class ColumnMapping:
     table: str
     column: str
     usedFor: str  # select/filter/join/groupBy/orderBy
+    exactValue: Optional[str] = None  # Exact value to use for filters (from typical values)
+    dataType: Optional[str] = None  # Data type of the column (e.g., INTEGER, TEXT, REAL)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for storage."""

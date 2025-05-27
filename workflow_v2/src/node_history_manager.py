@@ -340,6 +340,35 @@ class NodeHistoryManager:
         
         return revisions
     
+    async def get_node_retry_count(self, node_id: str) -> int:
+        """
+        Count how many times a node has been retried (revise + generate_sql operations after initial creation).
+        
+        Args:
+            node_id: The node ID
+            
+        Returns:
+            Number of retry attempts
+        """
+        operations = await self.get_node_operations(node_id)
+        
+        # Count SQL generation operations (excluding the first one)
+        sql_gen_count = 0
+        revise_count = 0
+        
+        for op in operations:
+            if op.operation == NodeOperationType.GENERATE_SQL:
+                sql_gen_count += 1
+            elif op.operation == NodeOperationType.REVISE:
+                revise_count += 1
+        
+        # Retry count is SQL generations beyond the first one
+        # Each retry involves a revise + generate_sql
+        retry_count = max(0, sql_gen_count - 1)
+        
+        self.logger.debug(f"Node {node_id} has {retry_count} retry attempts (sql_gen: {sql_gen_count}, revise: {revise_count})")
+        return retry_count
+    
     async def get_operations_in_timerange(self, start_time: str, end_time: str) -> List[NodeOperation]:
         """
         Get operations within a time range.

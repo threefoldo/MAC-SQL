@@ -52,33 +52,77 @@ class SchemaLinkerAgent(BaseMemoryAgent):
 1. **USE EXACT NAMES**: Table and column names are CASE-SENSITIVE - use them exactly as shown in the provided schema
 2. **NO INVENTION**: Only use tables/columns that exist in the schema - never guess or create names
 3. **SCHEMA SOURCE**: The 'full_schema' field below is your ONLY source of truth
+4. **SINGLE TABLE PREFERENCE**: Always try single-table solutions first before considering joins
+5. **COLUMN DISCOVERY**: Show all potentially relevant columns with sample data before selecting the best ones
 
 ## Your Task
-Analyze the query intent and link it to the correct database schema elements:
+Use a two-phase approach to link schema elements to the query:
 
-### Step 1: Understand the Query
-- Read the node's intent carefully
-- Identify what data is needed (tables, columns, filters, aggregations)
-- Check if this is a retry (node has sql/executionResult)
+### Phase 1: Discovery and Validation
 
-### Step 2: Check for Retry Issues
-**If node has executionResult or previous sql:**
-- **SQL Error**: Fix wrong table/column names or syntax issues
-- **Zero Results**: Check sample data for exact value formats, try LIKE patterns, case-insensitive matching
-- **Poor Quality**: Address specific issues from sql_evaluation_analysis
+**Step 1.1: Available Schema Elements**
+Before making any selections, list out:
+- All available table names from the schema
+- For each table, list ALL column names with their typical values
+- Identify foreign key relationships
 
-### Step 3: Select Schema Elements
-- **Tables**: Choose minimum necessary tables for the query
-- **Columns**: Include columns for SELECT, WHERE, JOIN, GROUP BY, ORDER BY
-- **Joins**: Identify foreign key relationships between tables
-- **Sample Data**: Verify your selections match actual data patterns
+**Step 1.2: Comprehensive Column Search**
+For EVERY filter/condition term in the query:
+- Search ALL tables for columns that could match
+- Check typical_values in EVERY column across ALL tables
+- Look for exact matches in typical_values first
+- Rank candidates by how well their typical_values match the query terms
 
-### Step 4: Verify with Sample Data
-The schema includes <sample_data> showing actual values. Use this to:
-- Match exact string formats and casing
-- Understand date/number formats
-- Find correct filter patterns
-- Validate column content
+**Step 1.3: Query Analysis**
+- Analyze the node's intent for required data elements
+- Check if this is a retry (look for previous sql/executionResult/analysis)
+- If retry, identify specific issues to fix from evaluation feedback
+
+**Step 1.4: Single-Table Preference Check**
+- After finding all matching columns, check if they all exist in ONE table
+- If yes, strongly prefer the single-table solution
+- Only use multiple tables if columns are spread across tables
+
+### Phase 2: Schema Linking with Candidate Analysis
+
+**Step 2.1: Comprehensive Column Discovery**
+For EVERY filter/condition term in the query:
+- Show ALL columns from ALL tables that could match the term
+- Include typical_values for each candidate column
+- Score each candidate:
+  - **HIGH confidence**: Exact match found in typical_values
+  - **MEDIUM confidence**: Partial/fuzzy match in typical_values
+  - **LOW confidence**: Column name matches but no value match
+
+**Step 2.2: Value Matching and Selection**
+- **Prefer Exact Matches**: Always choose columns where typical_values contain exact matches
+- **Single Table Preference**: If multiple columns match, prefer those from the same table
+- **Show Evidence**: Display the exact value from typical_values that matches
+- **NO GUESSING**: Use only values that exist in typical_values
+- **MULTIPLE SELECTION**: If multiple columns are relevant for a single query term (e.g., "charter-funded schools" might need both Charter School (Y/N) and Charter Funding Type), SELECT ALL of them
+
+**Step 2.3: Optimal Table Selection**
+After analyzing all candidates:
+- **Single-Table First**: Can all required columns come from ONE table?
+- **Minimize Joins**: Use the fewest tables possible
+- **Check Coverage**: Ensure selected tables have all needed columns
+- **Validate Values**: Confirm filter values exist in typical_values
+
+**Step 2.4: Final Column Selection**
+- Choose columns based on:
+  1. Exact value matches in typical_values (highest priority)
+  2. Single-table solutions (second priority)
+  3. Column name relevance (third priority)
+- **IMPORTANT**: Select ALL columns that are relevant to the query, not just the "best" one
+- For complex conditions (e.g., "charter-funded schools"), this often means selecting multiple related columns
+- Document why each column was selected
+
+**Step 2.5: Handle Retry Issues**
+If this is a retry with issues:
+- **Zero Results**: Check if filter values match exactly with typical_values
+- **Wrong Values**: Use the exact values from <typical_values>, not approximations
+- **SQL Errors**: Fix table/column names using exact names from schema
+- **Poor Quality**: Address specific evaluation feedback
 
 ## SQL Constraints to Consider
 {SQL_CONSTRAINTS}
@@ -86,12 +130,56 @@ The schema includes <sample_data> showing actual values. Use this to:
 ## Output Format
 
 <schema_linking>
+  <available_schema>
+    <tables>
+      <table name="table_name_here">
+        <columns>
+          <column name="column_name_here" type="data_type_here" sample_values="list_of_values_here"/>
+        </columns>
+      </table>
+    </tables>
+  </available_schema>
+  
+  <column_discovery>
+    <query_term original="user_search_term_here">
+      <all_candidates>
+        <candidate table="table1_name" column="column1_name" confidence="high">
+          <typical_values>actual_values_from_this_column</typical_values>
+          <exact_match_value>exact_matching_value_if_found</exact_match_value>
+          <reason>Exact match found in typical_values</reason>
+        </candidate>
+        <candidate table="table2_name" column="column2_name" confidence="medium">
+          <typical_values>actual_values_from_this_column</typical_values>
+          <partial_match_value>partial_matching_value</partial_match_value>
+          <reason>Partial match or column name similarity</reason>
+        </candidate>
+      </all_candidates>
+      <selected_columns>
+        <column table="table1_name" column="column1_name">
+          <exact_value>exact_value_from_typical_values</exact_value>
+          <reason>Selected because of exact value match and single-table solution possible</reason>
+        </column>
+        <column table="table2_name" column="column2_name">
+          <exact_value>exact_value_from_typical_values</exact_value>
+          <reason>Additional relevant column for the same query term</reason>
+        </column>
+      </selected_columns>
+    </query_term>
+  </column_discovery>
+  
+  <single_table_analysis>
+    <possible>true or false</possible>
+    <best_single_table>table_name_if_possible</best_single_table>
+    <reason>why_single_table_works_or_not</reason>
+  </single_table_analysis>
+  
   <selected_tables>
-    <table name="exact_table_name" alias="t1">
-      <purpose>Why this table is needed</purpose>
+    <table name="table_name_here" alias="alias_here">
+      <purpose>why_this_table_is_needed</purpose>
+      <single_table_solution>true or false</single_table_solution>
       <columns>
-        <column name="exact_column_name" used_for="select|filter|join|group|order|aggregate">
-          <reason>Why this column is needed</reason>
+        <column name="column_name_here" used_for="select or filter or join or group or order or aggregate">
+          <reason>why_this_column_is_needed</reason>
         </column>
       </columns>
     </table>
@@ -103,7 +191,7 @@ The schema includes <sample_data> showing actual values. Use this to:
       <from_column>column1</from_column>
       <to_table>table2</to_table>
       <to_column>column2</to_column>
-      <join_type>INNER|LEFT|RIGHT|FULL</join_type>
+      <join_type>INNER or LEFT or RIGHT or FULL</join_type>
     </join>
   </joins>
   
@@ -208,7 +296,7 @@ For retries, explain what changed and why the new approach should work."""
                         new_mapping=mapping
                     )
                     
-                    # User-friendly logging
+                    # Enhanced user-friendly logging
                     self.logger.info("="*60)
                     self.logger.info("Schema Linking")
                     
@@ -216,6 +304,74 @@ For retries, explain what changed and why the new approach should work."""
                     node = await self.tree_manager.get_node(node_id)
                     if node:
                         self.logger.info(f"Query intent: {node.intent}")
+                    
+                    # Log column discovery process if available
+                    if linking_result.get("column_discovery"):
+                        self.logger.info("Column Discovery Process:")
+                        for term, discovery in linking_result["column_discovery"].items():
+                            self.logger.info(f"  Term: '{term}'")
+                            if discovery.get("candidates"):
+                                self.logger.info(f"    Candidates found across ALL tables: {len(discovery['candidates'])}")
+                                # Group by confidence level
+                                high_conf = [c for c in discovery["candidates"] if c.get("confidence") == "high"]
+                                med_conf = [c for c in discovery["candidates"] if c.get("confidence") == "medium"]
+                                low_conf = [c for c in discovery["candidates"] if c.get("confidence") == "low"]
+                                
+                                if high_conf:
+                                    self.logger.info("    HIGH confidence matches (exact value match):")
+                                    for candidate in high_conf[:3]:  # Show top 3
+                                        exact_val = candidate.get("exact_match_value", "")
+                                        self.logger.info(f"      ✓ {candidate['table']}.{candidate['column']} = '{exact_val}'")
+                                
+                                if med_conf:
+                                    self.logger.info(f"    MEDIUM confidence matches: {len(med_conf)} found")
+                                
+                                if low_conf:
+                                    self.logger.info(f"    LOW confidence matches: {len(low_conf)} found")
+                                    
+                            if discovery.get("selected"):
+                                selected_list = discovery["selected"]
+                                # Handle both list and single dict formats
+                                if not isinstance(selected_list, list):
+                                    selected_list = [selected_list] if selected_list else []
+                                
+                                if len(selected_list) > 1:
+                                    self.logger.info(f"    → SELECTED {len(selected_list)} COLUMNS:")
+                                    for sel in selected_list:
+                                        if sel.get("exact_value"):
+                                            # Strip quotes for display
+                                            display_value = sel['exact_value']
+                                            if display_value and len(display_value) >= 2:
+                                                if (display_value.startswith("'") and display_value.endswith("'")) or \
+                                                   (display_value.startswith('"') and display_value.endswith('"')):
+                                                    display_value = display_value[1:-1]
+                                            self.logger.info(f"        • {sel['table']}.{sel['column']} = '{display_value}'")
+                                        else:
+                                            self.logger.info(f"        • {sel['table']}.{sel['column']}")
+                                elif selected_list:
+                                    sel = selected_list[0]
+                                    if sel.get("exact_value"):
+                                        # Strip quotes for display
+                                        display_value = sel['exact_value']
+                                        if display_value and len(display_value) >= 2:
+                                            if (display_value.startswith("'") and display_value.endswith("'")) or \
+                                               (display_value.startswith('"') and display_value.endswith('"')):
+                                                display_value = display_value[1:-1]
+                                        self.logger.info(f"    → SELECTED: {sel['table']}.{sel['column']} = '{display_value}'")
+                                    else:
+                                        self.logger.info(f"    → SELECTED: {sel['table']}.{sel['column']}")
+                    
+                    # Log single-table analysis
+                    if linking_result.get("single_table_possible") is not None:
+                        if linking_result.get("single_table_possible"):
+                            best_table = linking_result.get("best_single_table", "")
+                            self.logger.info(f"✓ Single-table solution POSSIBLE using table: {best_table}")
+                        else:
+                            self.logger.info("✗ Single-table solution NOT possible - multiple tables required")
+                    
+                    # Log single table solution status
+                    if linking_result.get("single_table_solution"):
+                        self.logger.info("✓ Single-table solution SELECTED")
                     
                     # Log linked tables
                     if mapping.tables:
@@ -290,26 +446,23 @@ For retries, explain what changed and why the new approach should work."""
                     xml_parts.append(f'            <references_column>{html.escape(col_info.references["column"])}</references_column>')
                     xml_parts.append(f'          </foreign_key>')
                 
+                # Add typical values if available
+                if col_info.typicalValues:
+                    xml_parts.append('          <typical_values>')
+                    # Limit to first 10 values for readability
+                    for value in col_info.typicalValues[:10]:
+                        if value is not None:
+                            # Use CDATA to handle special characters in values
+                            xml_parts.append(f'            <value><![CDATA[{value}]]></value>')
+                        else:
+                            xml_parts.append('            <value null="true"/>')
+                    if len(col_info.typicalValues) > 10:
+                        xml_parts.append(f'            <!-- {len(col_info.typicalValues) - 10} more values -->')
+                    xml_parts.append('          </typical_values>')
+                
                 xml_parts.append('        </column>')
             
             xml_parts.append('      </columns>')
-            
-            # Add sample data if available
-            if hasattr(table, 'sampleData') and table.sampleData:
-                xml_parts.append('      <sample_data>')
-                xml_parts.append(f'        <row_count>{len(table.sampleData[:3])}</row_count>')
-                for i, row in enumerate(table.sampleData[:3]):  # Limit to 3 samples
-                    xml_parts.append(f'        <row id="{i+1}">')
-                    for col, value in row.items():
-                        # Use CDATA for values to handle special characters
-                        escaped_col = html.escape(col)
-                        if value is not None:
-                            xml_parts.append(f'          <field name="{escaped_col}"><![CDATA[{value}]]></field>')
-                        else:
-                            xml_parts.append(f'          <field name="{escaped_col}" null="true"/>')
-                    xml_parts.append('        </row>')
-                xml_parts.append('      </sample_data>')
-            
             xml_parts.append('    </table>')
         
         xml_parts.append("  </tables>")
@@ -318,7 +471,7 @@ For retries, explain what changed and why the new approach should work."""
         return '\n'.join(xml_parts)
     
     def _parse_linking_xml(self, output: str) -> Optional[Dict[str, Any]]:
-        """Parse the schema linking XML output"""
+        """Parse the schema linking XML output with enhanced structure"""
         try:
             # Extract XML from output
             xml_match = re.search(r'<schema_linking>.*?</schema_linking>', output, re.DOTALL)
@@ -333,19 +486,101 @@ For retries, explain what changed and why the new approach should work."""
             else:
                 xml_content = xml_match.group()
             
-            # Parse XML
-            root = ET.fromstring(xml_content)
+            # Try to parse XML
+            try:
+                root = ET.fromstring(xml_content)
+            except ET.ParseError as e:
+                self.logger.warning(f"XML parsing failed: {str(e)}")
+                self.logger.info("Attempting fallback parsing with regex...")
+                # Fallback to regex-based parsing for key elements
+                return self._fallback_parse_linking(xml_content)
             
             result = {
                 "tables": [],
                 "joins": [],
-                "sample_query": root.findtext("sample_query_pattern", "").strip()
+                "sample_query": root.findtext("sample_query_pattern", "").strip(),
+                "column_discovery": {},
+                "single_table_solution": False
             }
+            
+            # Parse column discovery section for enhanced logging
+            discovery_elem = root.find("column_discovery")
+            if discovery_elem is not None:
+                for term_elem in discovery_elem.findall("query_term"):
+                    original_term = term_elem.get("original", "")
+                    candidates = []
+                    
+                    # Parse all_candidates for the new structure
+                    all_candidates_elem = term_elem.find("all_candidates")
+                    if all_candidates_elem is not None:
+                        for candidate in all_candidates_elem.findall("candidate"):
+                            candidates.append({
+                                "table": candidate.get("table"),
+                                "column": candidate.get("column"),
+                                "typical_values": candidate.findtext("typical_values", "").strip(),
+                                "exact_match_value": candidate.findtext("exact_match_value", "").strip(),
+                                "confidence": candidate.get("confidence", "medium"),
+                                "reason": candidate.findtext("reason", "").strip()
+                            })
+                    else:
+                        # Fallback to old structure
+                        candidates_elem = term_elem.find("candidates")
+                        if candidates_elem is not None:
+                            for candidate in candidates_elem.findall("candidate"):
+                                candidates.append({
+                                    "table": candidate.get("table"),
+                                    "column": candidate.get("column"),
+                                    "sample_values": candidate.get("sample_values", ""),
+                                    "confidence": candidate.get("confidence", "medium"),
+                                    "reason": candidate.findtext("reason", "").strip()
+                                })
+                    
+                    # Handle both old single-selected and new multi-selected formats
+                    selected_list = []
+                    
+                    # Try new format with selected_columns
+                    selected_columns_elem = term_elem.find("selected_columns")
+                    if selected_columns_elem is not None:
+                        for col_elem in selected_columns_elem.findall("column"):
+                            selected_list.append({
+                                "table": col_elem.get("table"),
+                                "column": col_elem.get("column"),
+                                "exact_value": col_elem.findtext("exact_value", "").strip(),
+                                "reason": col_elem.findtext("reason", "").strip()
+                            })
+                    else:
+                        # Fallback to old single-selected format
+                        selected_elem = term_elem.find("selected")
+                        if selected_elem is not None:
+                            selected_list.append({
+                                "table": selected_elem.get("table"),
+                                "column": selected_elem.get("column"),
+                                "exact_value": selected_elem.findtext("exact_value", "").strip(),
+                                "reason": selected_elem.findtext("reason", "").strip()
+                            })
+                    
+                    result["column_discovery"][original_term] = {
+                        "candidates": candidates,
+                        "selected": selected_list  # Now a list instead of single item
+                    }
+            
+            # Parse single-table analysis
+            single_table_elem = root.find("single_table_analysis")
+            if single_table_elem is not None:
+                result["single_table_possible"] = single_table_elem.findtext("possible", "false").lower() == "true"
+                result["best_single_table"] = single_table_elem.findtext("best_single_table", "").strip()
+                if result["single_table_possible"]:
+                    result["single_table_solution"] = True
             
             # Parse selected tables
             tables_elem = root.find("selected_tables")
             if tables_elem is not None:
                 for table_elem in tables_elem.findall("table"):
+                    # Check if this is marked as single table solution
+                    single_table = table_elem.findtext("single_table_solution", "false").lower() == "true"
+                    if single_table:
+                        result["single_table_solution"] = True
+                    
                     table_info = {
                         "name": table_elem.get("name"),
                         "alias": table_elem.get("alias", ""),
@@ -389,6 +624,30 @@ For retries, explain what changed and why the new approach should work."""
         """Create QueryMapping from schema linking result"""
         mapping = QueryMapping()
         
+        # Build a lookup for exact values from column discovery
+        exact_values_lookup = {}
+        column_discovery = linking_result.get("column_discovery", {})
+        for term, discovery in column_discovery.items():
+            selected_list = discovery.get("selected", [])
+            # Handle both list and single dict formats
+            if not isinstance(selected_list, list):
+                selected_list = [selected_list] if selected_list else []
+            
+            # Process all selected columns for this term
+            for selected in selected_list:
+                if selected and selected.get("exact_value"):
+                    table = selected.get("table")
+                    column = selected.get("column")
+                    if table and column:
+                        key = f"{table}.{column}"
+                        exact_value = selected.get("exact_value")
+                        # Strip surrounding quotes if present (typical values often include quotes)
+                        if exact_value and len(exact_value) >= 2:
+                            if (exact_value.startswith("'") and exact_value.endswith("'")) or \
+                               (exact_value.startswith('"') and exact_value.endswith('"')):
+                                exact_value = exact_value[1:-1]
+                        exact_values_lookup[key] = exact_value
+        
         # Add tables
         for table_info in linking_result.get("tables", []):
             table_mapping = TableMapping(
@@ -400,10 +659,22 @@ For retries, explain what changed and why the new approach should work."""
             
             # Add columns
             for col_info in table_info.get("columns", []):
+                # Look up exact value for this column
+                lookup_key = f"{table_info['name']}.{col_info['name']}"
+                exact_value = exact_values_lookup.get(lookup_key)
+                
+                # Get data type from schema
+                data_type = None
+                column_info = await self.schema_manager.get_column(table_info["name"], col_info["name"])
+                if column_info:
+                    data_type = column_info.dataType
+                
                 column_mapping = ColumnMapping(
                     table=table_info["name"],
                     column=col_info["name"],
-                    usedFor=col_info.get("used_for", "select")
+                    usedFor=col_info.get("used_for", "select"),
+                    exactValue=exact_value,  # Include the exact value if found
+                    dataType=data_type  # Include the data type
                 )
                 mapping.columns.append(column_mapping)
         
@@ -460,3 +731,92 @@ For retries, explain what changed and why the new approach should work."""
             return node.mapping
         
         return None
+    
+    def _fallback_parse_linking(self, xml_content: str) -> Optional[Dict[str, Any]]:
+        """Fallback parser using regex when XML parsing fails"""
+        self.logger.info("Using fallback regex-based parser")
+        
+        result = {
+            "tables": [],
+            "joins": [],
+            "column_discovery": {},
+            "single_table_solution": False
+        }
+        
+        try:
+            # Extract selected tables
+            tables_match = re.search(r'<selected_tables>(.*?)</selected_tables>', xml_content, re.DOTALL)
+            if tables_match:
+                tables_content = tables_match.group(1)
+                # Find each table
+                for table_match in re.finditer(r'<table\s+name="([^"]+)"\s+alias="([^"]+)"[^>]*>(.*?)</table>', tables_content, re.DOTALL):
+                    table_name = table_match.group(1)
+                    alias = table_match.group(2)
+                    table_content = table_match.group(3)
+                    
+                    table_info = {
+                        "name": table_name,
+                        "alias": alias,
+                        "columns": []
+                    }
+                    
+                    # Extract columns for this table
+                    for col_match in re.finditer(r'<column\s+name="([^"]+)"\s+used_for="([^"]+)"[^>]*>', table_content):
+                        col_name = col_match.group(1)
+                        used_for = col_match.group(2)
+                        table_info["columns"].append({
+                            "name": col_name,
+                            "used_for": used_for
+                        })
+                    
+                    result["tables"].append(table_info)
+            
+            # Extract joins
+            joins_match = re.search(r'<joins>(.*?)</joins>', xml_content, re.DOTALL)
+            if joins_match:
+                joins_content = joins_match.group(1)
+                for join_match in re.finditer(r'<from_table>([^<]+)</from_table>.*?<from_column>([^<]+)</from_column>.*?<to_table>([^<]+)</to_table>.*?<to_column>([^<]+)</to_column>', joins_content, re.DOTALL):
+                    result["joins"].append({
+                        "from_table": join_match.group(1).strip(),
+                        "from_column": join_match.group(2).strip(),
+                        "to_table": join_match.group(3).strip(),
+                        "to_column": join_match.group(4).strip(),
+                        "join_type": "INNER"  # Default
+                    })
+            
+            # Extract column discovery with exact values
+            discovery_match = re.search(r'<column_discovery>(.*?)</column_discovery>', xml_content, re.DOTALL)
+            if discovery_match:
+                discovery_content = discovery_match.group(1)
+                for term_match in re.finditer(r'<query_term\s+original="([^"]+)"[^>]*>(.*?)</query_term>', discovery_content, re.DOTALL):
+                    term = term_match.group(1)
+                    term_content = term_match.group(2)
+                    
+                    # Look for selected columns with exact values
+                    selected_match = re.search(r'<selected_columns>(.*?)</selected_columns>', term_content, re.DOTALL)
+                    if selected_match:
+                        selected_content = selected_match.group(1)
+                        selected_columns = []
+                        
+                        for col_match in re.finditer(r'<column\s+table="([^"]+)"\s+column="([^"]+)"[^>]*>.*?<exact_value>([^<]*)</exact_value>', selected_content, re.DOTALL):
+                            selected_columns.append({
+                                "table": col_match.group(1),
+                                "column": col_match.group(2),
+                                "exact_value": col_match.group(3).strip()
+                            })
+                        
+                        if selected_columns:
+                            result["column_discovery"][term] = {"selected": selected_columns}
+            
+            # Extract single table analysis
+            single_table_match = re.search(r'<single_table_analysis>.*?<possible>([^<]+)</possible>', xml_content, re.DOTALL)
+            if single_table_match:
+                possible = single_table_match.group(1).strip().lower()
+                result["single_table_solution"] = possible == "true"
+            
+            self.logger.info(f"Fallback parser extracted: {len(result['tables'])} tables, {len(result['joins'])} joins")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Fallback parser also failed: {str(e)}", exc_info=True)
+            return None

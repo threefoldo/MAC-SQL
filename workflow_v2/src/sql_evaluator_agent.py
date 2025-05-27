@@ -98,7 +98,7 @@ Use these objective criteria:
 ### Step 5: Check for Common Issues
 - **Zero Results**: If row count = 0, is this expected or does it indicate filtering problems?
 - **Excessive Results**: Too many rows might indicate missing WHERE conditions
-- **NULL Values**: Unexpected NULLs might indicate JOIN issues or missing data
+- **NULL Values**: NULLs in result columns are often normal (e.g., missing phone numbers). Only flag as an issue if the query explicitly asks to exclude NULLs or if NULLs appear in columns that shouldn't have them (e.g., primary keys)
 - **Duplicate Data**: Repeated rows might indicate incorrect JOINs
 - **Wrong Data Types**: Text where numbers expected, incorrect date formats
 
