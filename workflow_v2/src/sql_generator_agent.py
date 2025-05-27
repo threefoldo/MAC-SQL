@@ -46,145 +46,87 @@ class SQLGeneratorAgent(BaseMemoryAgent):
     
     def _build_system_message(self) -> str:
         """Build the system message for SQL generation"""
-        return f"""You are an expert SQL query generator for SQLite databases. Your role is to generate accurate SQL queries based on the provided node information.
+        return f"""You are an expert SQL query generator for SQLite databases.
+
+## CRITICAL RULES (Must Follow)
+1. **USE EXACT NAMES**: Use only table/column names from the provided mapping (CASE-SENSITIVE)
+2. **NO GUESSING**: Never modify or invent table/column names
+3. **FOLLOW CONSTRAINTS**: Apply all SQL generation constraints systematically
+
+## Your Task
+Generate accurate SQL queries based on the provided node information.
+
+### Step 1: Parse Context
+Extract from the "current_node" JSON:
+- **intent**: The query to convert to SQL
+- **mapping**: Tables, columns, and joins to use
+- **sql**: Previous SQL (if this is a retry)
+- **executionResult**: Previous execution results and errors
+- **evidence**: Domain-specific knowledge
+
+### Step 2: Determine Scenario
+**New Generation**: No previous sql in the node
+- Generate fresh SQL based on intent and mapping
+
+**Retry Generation**: Node has sql and executionResult
+- **NEVER generate the same SQL that failed**
+- Fix specific issues based on error type
+
+**Refiner Mode**: "refiner_prompt" is provided
+- Follow the refiner prompt exactly (it contains all needed context)
+
+### Step 3: Handle Retry Issues
+**SQL Error (executionResult.error exists)**:
+- "no such table/column" → Check exact names in mapping
+- "ambiguous column" → Add table aliases  
+- "syntax error" → Fix SQL syntax
+- "division by zero" → Add NULLIF or CASE statements
+
+**Zero Results (rowCount = 0)**:
+- Replace exact matches with LIKE '%value%'
+- Try case-insensitive comparisons (LOWER/UPPER)
+- Remove restrictive WHERE conditions
+- Check if JOINs exclude all records
+
+**Poor Quality (from sql_evaluation_analysis)**:
+- Address each listed issue
+- Follow provided suggestions
+
+### Step 4: Generate SQL
+**Simple Queries**: Direct SELECT with proper WHERE/ORDER BY/GROUP BY
+**Complex Queries**: Use CTEs, subqueries, or combine child node results
+**SQLite Specifics**: No FULL OUTER JOIN, use CAST(), proper GROUP BY
 
 ## SQL Generation Constraints
 {SQL_CONSTRAINTS}
 
-## Context Understanding
-You will receive context information about the current node. The context will be provided in sections, each starting with "### Section Name". Look for these key sections:
-
-1. **### Current Node**: Complete node information as a JSON object including:
-   - intent: The natural language query to convert to SQL
-   - mapping: Schema information with tables, columns, and joins to use
-   - sql: Any previously generated SQL (if this is a revision)
-   - executionResult: Previous execution results including data, rowCount, errors
-   - evidence: Any domain knowledge/hints provided
-   - status: Current processing status
-
-2. **### Evidence** (when available): Domain-specific knowledge or hints that should guide SQL generation
-   - Use this information to understand domain context
-   - Apply any specific rules or constraints mentioned
-   - Consider evidence when interpreting ambiguous requirements
-
-3. **### Children Nodes** (optional): Information about child nodes if this is a complex query
-
-4. **### Node History**: Complete history showing all operations on this node
-
-5. **### Sql Evaluation Analysis** (optional): Detailed analysis of previous SQL attempt:
-   - answers_intent: Whether the SQL answered the query correctly
-   - result_quality: Quality assessment (excellent/good/acceptable/poor)
-   - issues: Specific problems identified
-   - suggestions: Recommendations for improvement
-
-## IMPORTANT: Reading the Context
-To generate SQL, you MUST first parse the ### Current Node section to extract:
-1. The intent (what query to generate)
-2. The mapping (which tables/columns to use)
-3. Any previous SQL attempts and their results
-4. The evidence (if provided in the node or separately)
-
-The Current Node section contains a JSON object - parse it to understand the query requirements.
-
-## SQL Generation Guidelines
-
-### For Simple Queries:
-- Generate straightforward SELECT statements
-- Use only the tables and columns specified in the mapping
-- Apply filters, aggregations, and sorting as implied by the intent
-- Keep the query as simple as possible while meeting requirements
-
-### For Complex Queries with Children:
-- Check if children have SQL already generated
-- Combine child queries using appropriate methods:
-  - CTEs (Common Table Expressions) for better readability
-  - Subqueries when simpler
-  - UNION/UNION ALL for combining similar results
-  - JOINs when correlating different aspects
-
-### CRITICAL for Retry Attempts (when node has sql and executionResult):
-**YOU MUST NOT GENERATE THE SAME SQL THAT FAILED**
-
-1. **If executionResult.error exists:**
-   - Analyze the error message carefully
-   - Common fixes:
-     - "no such table/column": Check exact names in mapping
-     - "ambiguous column": Add table aliases
-     - "syntax error": Fix SQL syntax
-     - "division by zero": Add NULLIF or CASE to handle zeros
-
-2. **If executionResult.rowCount is 0 (NO RESULTS):**
-   - The SQL syntax was correct but returned no data
-   - DO NOT just adjust the SQL slightly - try a different approach:
-     - Replace exact matches with LIKE '%value%'
-     - Check if string values need different casing
-     - Try removing some WHERE conditions to be less restrictive
-     - Consider if JOINs are excluding all records
-     - Look for typos in string literals
-
-3. **If sql_evaluation_analysis shows poor/acceptable quality:**
-   - Address each issue listed
-   - Follow the suggestions provided
-   - Ensure the new SQL better answers the intent
-
-**In your explanation, clearly state:**
-- What failed in the previous attempt
-- What specific changes you made
-- Why these changes should work
-
-### SQLite-Specific Considerations:
-- No FULL OUTER JOIN (use LEFT JOIN + UNION)
-- Use CAST for type conversions
-- datetime() function for date operations
-- GROUP BY requires all non-aggregate SELECT columns
-- LIMIT without ORDER BY may return inconsistent results
-
-### Best Practices:
-- Use meaningful table aliases from the mapping
-- Qualify all columns with table aliases to avoid ambiguity
-- Include only necessary columns (avoid SELECT *)
-- Use proper JOIN conditions from the mapping
-- Add comments for complex logic using /* */
-- Apply SQL constraints systematically:
-  * Select only needed columns without unnecessary data
-  * Avoid unnecessary tables in FROM/JOIN clauses
-  * Use JOIN before MAX/MIN functions
-  * Handle NULL values with IS NOT NULL when needed
-  * Use GROUP BY before ORDER BY for distinct values
-  * Use CAST for type conversions in SQLite
-
-### CRITICAL RULES:
-- Use EXACT table and column names from the mapping (CASE-SENSITIVE)
-- Do NOT modify or guess table/column names
-- If the mapping has incorrect names, the query will fail - do not try to fix them
-
-## Special Case: SQL Refinement
-If a 'refiner_prompt' is provided in the context, it means the previous SQL failed and needs correction.
-In this case:
-1. **Follow the refiner prompt exactly** - it contains the specific error and structured guidance
-2. The refiner prompt already includes all necessary information (schema, error, constraints)
-3. Generate the corrected SQL as requested in the refiner prompt
-4. Still use the standard output format below
-
-## Output Format:
+## Output Format
 
 <sql_generation>
   <query_type>simple|join|aggregate|subquery|complex</query_type>
   <sql>
-    -- Generated SQL query
-    Your SQL query here
+    -- Your SQL query here
+    SELECT ... FROM ... WHERE ...
   </sql>
   <explanation>
-    Brief explanation of how the query addresses the intent
+    How the query addresses the intent
   </explanation>
   <considerations>
-    - Any assumptions made
-    - Potential limitations
-    - Error fixes applied (if revision)
+    - Assumptions made
+    - Limitations
+    - Changes from previous attempt (if retry)
   </considerations>
 </sql_generation>
 
-IMPORTANT: Generate SQL that exactly matches the intent using ONLY the schema elements provided in the mapping."""
+## SQLite Best Practices
+- Use table aliases and qualify all columns
+- Include only necessary columns (avoid SELECT *)
+- Use JOIN before aggregation functions
+- Handle NULLs with IS NOT NULL when needed
+- Use CAST for type conversions
+- Add GROUP BY before ORDER BY for distinct values
+
+For retries, explain what failed and what you changed."""
     
     async def _reader_callback(self, memory: KeyValueMemory, task: str, cancellation_token) -> Dict[str, Any]:
         """Read context from memory before generating SQL"""
@@ -321,24 +263,39 @@ IMPORTANT: Generate SQL that exactly matches the intent using ONLY the schema el
     def _parse_generation_xml(self, output: str) -> Optional[Dict[str, Any]]:
         """Parse the SQL generation XML output"""
         try:
-            # Extract XML
+            # Extract XML - try multiple patterns
             xml_match = re.search(r'<sql_generation>.*?</sql_generation>', output, re.DOTALL)
             if not xml_match:
-                # Try code block
+                # Try code block with xml
                 xml_match = re.search(r'```xml\s*\n(.*?)\n```', output, re.DOTALL)
                 if xml_match:
                     xml_content = xml_match.group(1)
                 else:
-                    # Fallback: try to extract SQL directly
-                    sql = extract_sql_from_text(output)
-                    if sql:
-                        return {
-                            "query_type": "unknown",
-                            "sql": sql,
-                            "explanation": "Extracted from response",
-                            "considerations": ""
-                        }
-                    return None
+                    # Try code block with sql_generation
+                    xml_match = re.search(r'```sql_generation\s*\n(.*?)\n```', output, re.DOTALL)
+                    if xml_match:
+                        xml_content = xml_match.group(1)
+                    else:
+                        # Try any code block that contains sql_generation tags
+                        xml_match = re.search(r'```[a-zA-Z_]*\s*\n(.*?<sql_generation>.*?</sql_generation>.*?)\n```', output, re.DOTALL)
+                        if xml_match:
+                            xml_content = xml_match.group(1)
+                        else:
+                            # Try to extract individual XML tags separately
+                            individual_result = self._extract_individual_tags(output)
+                            if individual_result:
+                                return individual_result
+                            
+                            # Final fallback: try to extract SQL directly
+                            sql = extract_sql_from_text(output)
+                            if sql:
+                                return {
+                                    "query_type": "unknown",
+                                    "sql": sql,
+                                    "explanation": "Extracted from response",
+                                    "considerations": ""
+                                }
+                            return None
             else:
                 xml_content = xml_match.group()
             
@@ -381,6 +338,41 @@ IMPORTANT: Generate SQL that exactly matches the intent using ONLY the schema el
                     "considerations": ""
                 }
             
+            return None
+    
+    def _extract_individual_tags(self, output: str) -> Optional[Dict[str, Any]]:
+        """Extract individual XML tags when full block parsing fails"""
+        try:
+            # Try to extract individual tags
+            query_type_match = re.search(r'<query_type>\s*(.*?)\s*</query_type>', output, re.DOTALL)
+            sql_match = re.search(r'<sql>\s*(.*?)\s*</sql>', output, re.DOTALL)
+            explanation_match = re.search(r'<explanation>\s*(.*?)\s*</explanation>', output, re.DOTALL)
+            considerations_match = re.search(r'<considerations>\s*(.*?)\s*</considerations>', output, re.DOTALL)
+            
+            # We need at least SQL to be successful
+            if not sql_match:
+                return None
+            
+            result = {
+                "query_type": query_type_match.group(1).strip() if query_type_match else "unknown",
+                "sql": sql_match.group(1).strip(),
+                "explanation": explanation_match.group(1).strip() if explanation_match else "Individual tag extraction",
+                "considerations": considerations_match.group(1).strip() if considerations_match else ""
+            }
+            
+            # Clean up SQL (same logic as before)
+            if result["sql"]:
+                sql = result["sql"].strip()
+                # Replace multiple whitespace with single space, but preserve line breaks if they exist
+                sql = re.sub(r'[ \t]+', ' ', sql)  # Replace multiple spaces/tabs with single space
+                sql = re.sub(r' *\n *', '\n', sql)  # Clean around line breaks
+                result["sql"] = sql
+            
+            self.logger.info("Successfully extracted individual XML tags")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error extracting individual tags: {str(e)}", exc_info=True)
             return None
     
     async def generate_sql(self, node_id: str, retry_count: int = 0) -> Optional[str]:

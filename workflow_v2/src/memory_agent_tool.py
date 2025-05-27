@@ -143,7 +143,7 @@ class MemoryAgentTool(BaseTool[MemoryAgentToolArgs, TaskResult], Component[Memor
                 memory_context = await self._reader_callback(self._memory, task, cancellation_token)
                 logging.debug(f"[{self.__class__.__name__}] Read memory context: {list(memory_context.keys())}")
             except Exception as e:
-                logging.error(f"[{self.__class__.__name__}] Error reading from memory: {str(e)}")
+                logging.error(f"[{self.__class__.__name__}] Error reading from memory: {str(e)}", exc_info=True)
         
         # Step 2: Enhance task with memory context if available
         enhanced_task = task
@@ -163,7 +163,7 @@ class MemoryAgentTool(BaseTool[MemoryAgentToolArgs, TaskResult], Component[Memor
                 await self._parser_callback(self._memory, task, result, cancellation_token)
                 logging.debug(f"[{self.__class__.__name__}] Updated memory with task result")
             except Exception as e:
-                logging.error(f"[{self.__class__.__name__}] Error updating memory: {str(e)}")
+                logging.error(f"[{self.__class__.__name__}] Error updating memory: {str(e)}", exc_info=True)
         
         return result
     
