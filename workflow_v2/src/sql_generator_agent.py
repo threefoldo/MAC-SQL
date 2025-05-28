@@ -7,7 +7,6 @@ linked schema information.
 
 import logging
 import re
-import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 import json
@@ -18,11 +17,10 @@ from database_schema_manager import DatabaseSchemaManager
 from query_tree_manager import QueryTreeManager
 from node_history_manager import NodeHistoryManager
 from memory_content_types import (
-    QueryNode, QueryMapping, NodeStatus, ExecutionResult,
-    CombineStrategy, CombineStrategyType
+    QueryNode, NodeStatus, ExecutionResult
 )
-from utils import extract_sql_from_text
-from prompts import SQL_CONSTRAINTS, format_refiner_template
+from utils import extract_sql_from_text, parse_xml_hybrid
+from prompts import SQL_CONSTRAINTS
 
 
 class SQLGeneratorAgent(BaseMemoryAgent):
@@ -55,7 +53,13 @@ class SQLGeneratorAgent(BaseMemoryAgent):
 4. **PREFER SIMPLICITY**: Use single-table queries when possible, avoid unnecessary joins
 
 ## Your Task
-Generate accurate SQL queries based on the provided node information.
+Generate accurate SQL queries based on the provided node information. You handle THREE scenarios automatically:
+
+1. **New Generation**: No existing SQL - generate fresh SQL from intent and schema
+2. **Refinement**: Existing SQL with issues - improve the SQL based on errors/feedback  
+3. **Combination**: Multiple child node SQLs - combine them into a single query
+
+The context will indicate which scenario applies.
 
 ### Step 1: Parse Context and Analyze Schema Linking
 Extract from the "current_node" JSON:
@@ -262,7 +266,8 @@ For retries, explain what failed and what you changed."""
             return
             
         last_message = result.messages[-1].content
-        self.logger.info(f"Raw LLM output (first 500 chars): {last_message[:500]}")
+        # Log the raw output for debugging
+        self.logger.info(f"Raw LLM output: {last_message}")
         
         try:
             # Parse the XML output
@@ -275,8 +280,20 @@ For retries, explain what failed and what you changed."""
                 node_id = await self.tree_manager.get_current_node_id()
                 
                 if node_id:
-                    # Update the node with SQL
+                    # Store the entire generation result in the QueryTree node
+                    await self.tree_manager.update_node(node_id, {"generation": generation_result})
+                    
+                    # Update the node with SQL (for backwards compatibility)
                     await self.tree_manager.update_node_sql(node_id, sql)
+                    
+                    # Store explanation and considerations in the node for next agents to use
+                    await self.tree_manager.update_node_sql_context(
+                        node_id=node_id,
+                        explanation=generation_result.get("explanation", ""),
+                        considerations=generation_result.get("considerations", ""),
+                        query_type=generation_result.get("query_type", "simple")
+                    )
+                    self.logger.info(f"Stored complete SQL generation result in node {node_id}")
                     
                     # Record in history
                     await self.history_manager.record_generate_sql(
@@ -293,9 +310,11 @@ For retries, explain what failed and what you changed."""
                     if node:
                         self.logger.info(f"Query intent: {node.intent}")
                         
-                        # Check for single table solution indicators
-                        if node.mapping and node.mapping.tables:
-                            table_count = len(node.mapping.tables)
+                        # Check for single table solution indicators from schema linking
+                        node_dict = node.to_dict()
+                        schema_linking = node_dict.get("schema_linking", {})
+                        if schema_linking.get("tables"):
+                            table_count = len(schema_linking["tables"])
                             if table_count == 1:
                                 self.logger.info("✓ Single-table solution generated")
                             else:
@@ -303,9 +322,9 @@ For retries, explain what failed and what you changed."""
                             
                             # Show table utilization
                             self.logger.info("Table utilization:")
-                            for table in node.mapping.tables:
-                                table_cols = [c for c in node.mapping.columns if c.table == table.name]
-                                self.logger.info(f"  - {table.name}: {len(table_cols)} columns used")
+                            for table in schema_linking["tables"]:
+                                table_name = table.get("name", "unknown") if isinstance(table, dict) else str(table)
+                                self.logger.info(f"  - {table_name}")
                     
                     # Log query type and complexity
                     if generation_result.get("query_type"):
@@ -313,7 +332,7 @@ For retries, explain what failed and what you changed."""
                         self.logger.info(f"Query type: {query_type}")
                     
                     # Check for retry indicators
-                    if node and node.sql:
+                    if node and node.generation and node.generation.get("sql"):
                         self.logger.info("⚠️  Retry generation (previous SQL existed)")
                     
                     # Log the generated SQL
@@ -342,56 +361,13 @@ For retries, explain what failed and what you changed."""
     
     
     def _parse_generation_xml(self, output: str) -> Optional[Dict[str, Any]]:
-        """Parse the SQL generation XML output"""
-        try:
-            # Extract XML - try multiple patterns
-            xml_match = re.search(r'<sql_generation>.*?</sql_generation>', output, re.DOTALL)
-            if not xml_match:
-                # Try code block with xml
-                xml_match = re.search(r'```xml\s*\n(.*?)\n```', output, re.DOTALL)
-                if xml_match:
-                    xml_content = xml_match.group(1)
-                else:
-                    # Try code block with sql_generation
-                    xml_match = re.search(r'```sql_generation\s*\n(.*?)\n```', output, re.DOTALL)
-                    if xml_match:
-                        xml_content = xml_match.group(1)
-                    else:
-                        # Try any code block that contains sql_generation tags
-                        xml_match = re.search(r'```[a-zA-Z_]*\s*\n(.*?<sql_generation>.*?</sql_generation>.*?)\n```', output, re.DOTALL)
-                        if xml_match:
-                            xml_content = xml_match.group(1)
-                        else:
-                            # Try to extract individual XML tags separately
-                            individual_result = self._extract_individual_tags(output)
-                            if individual_result:
-                                return individual_result
-                            
-                            # Final fallback: try to extract SQL directly
-                            sql = extract_sql_from_text(output)
-                            if sql:
-                                return {
-                                    "query_type": "unknown",
-                                    "sql": sql,
-                                    "explanation": "Extracted from response",
-                                    "considerations": ""
-                                }
-                            return None
-            else:
-                xml_content = xml_match.group()
-            
-            # Parse XML
-            root = ET.fromstring(xml_content)
-            
-            result = {
-                "query_type": root.findtext("query_type", "simple").strip(),
-                "sql": root.findtext("sql", "").strip(),
-                "explanation": root.findtext("explanation", "").strip(),
-                "considerations": root.findtext("considerations", "").strip()
-            }
-            
+        """Parse the SQL generation XML output using hybrid approach"""
+        # Use the hybrid parsing utility
+        result = parse_xml_hybrid(output, 'sql_generation')
+        
+        if result:
             # Clean up SQL (preserve line structure but remove extra whitespace)
-            if result["sql"]:
+            if result.get("sql"):
                 # Split into lines, clean each line, then rejoin
                 lines = result["sql"].split('\n')
                 cleaned_lines = []
@@ -405,153 +381,19 @@ For retries, explain what failed and what you changed."""
                 result["sql"] = ' '.join(cleaned_lines).strip()
             
             return result
-            
-        except Exception as e:
-            self.logger.error(f"Error parsing SQL generation XML: {str(e)}", exc_info=True)
-            
-            # Try to extract SQL as fallback
-            sql = extract_sql_from_text(output)
-            if sql:
-                return {
-                    "query_type": "unknown",
-                    "sql": sql,
-                    "explanation": "Fallback extraction",
-                    "considerations": ""
-                }
-            
-            return None
-    
-    def _extract_individual_tags(self, output: str) -> Optional[Dict[str, Any]]:
-        """Extract individual XML tags when full block parsing fails"""
-        try:
-            # Try to extract individual tags
-            query_type_match = re.search(r'<query_type>\s*(.*?)\s*</query_type>', output, re.DOTALL)
-            sql_match = re.search(r'<sql>\s*(.*?)\s*</sql>', output, re.DOTALL)
-            explanation_match = re.search(r'<explanation>\s*(.*?)\s*</explanation>', output, re.DOTALL)
-            considerations_match = re.search(r'<considerations>\s*(.*?)\s*</considerations>', output, re.DOTALL)
-            
-            # We need at least SQL to be successful
-            if not sql_match:
-                return None
-            
-            result = {
-                "query_type": query_type_match.group(1).strip() if query_type_match else "unknown",
-                "sql": sql_match.group(1).strip(),
-                "explanation": explanation_match.group(1).strip() if explanation_match else "Individual tag extraction",
-                "considerations": considerations_match.group(1).strip() if considerations_match else ""
+        
+        # Fallback: try to extract SQL directly
+        sql = extract_sql_from_text(output)
+        if sql:
+            return {
+                "query_type": "unknown",
+                "sql": sql,
+                "explanation": "Extracted from response",
+                "considerations": ""
             }
-            
-            # Clean up SQL (same logic as before)
-            if result["sql"]:
-                sql = result["sql"].strip()
-                # Replace multiple whitespace with single space, but preserve line breaks if they exist
-                sql = re.sub(r'[ \t]+', ' ', sql)  # Replace multiple spaces/tabs with single space
-                sql = re.sub(r' *\n *', '\n', sql)  # Clean around line breaks
-                result["sql"] = sql
-            
-            self.logger.info("Successfully extracted individual XML tags")
-            return result
-            
-        except Exception as e:
-            self.logger.error(f"Error extracting individual tags: {str(e)}", exc_info=True)
-            return None
-    
-    async def generate_sql(self, node_id: str) -> Optional[str]:
-        """
-        Generate SQL for a specific query node.
-        
-        Args:
-            node_id: The ID of the node to generate SQL for
-            
-        Returns:
-            The generated SQL or None if failed
-        """
-        self.logger.debug(f"Generating SQL for node: {node_id}")
-        
-        # Set the current node in QueryTreeManager
-        await self.tree_manager.set_current_node_id(node_id)
-        
-        # Run the agent
-        task = "Generate SQL for the current query node"
-        result = await self.run(task)
-        
-        # Get the node to check if it has SQL
-        node = await self.tree_manager.get_node(node_id)
-        if node and node.sql:
-            return node.sql
-        
         return None
     
-    async def refine_sql(self, node_id: str, error_message: str, exception_class: str = "SQLException") -> Optional[str]:
-        """
-        Refine SQL that encountered an error using the proven refiner template.
-        
-        Args:
-            node_id: The ID of the node with failed SQL
-            error_message: The error message from SQLite
-            exception_class: The exception class name
-            
-        Returns:
-            The refined SQL or None if failed
-        """
-        # Get the node
-        node = await self.tree_manager.get_node(node_id)
-        if not node or not node.sql:
-            self.logger.error(f"No node or SQL found for refinement: {node_id}")
-            return None
-        
-        # Get evidence from the node or root node
-        evidence = node.evidence
-        if not evidence and node.parentId:
-            root_node = await self.tree_manager.get_root_node()
-            if root_node:
-                evidence = root_node.evidence
-        
-        # Get schema information
-        schema_xml = await self._get_schema_xml()
-        
-        # Extract schema description and foreign keys (simplified for now)
-        desc_str = schema_xml
-        fk_str = ""  # Would need to extract from schema_xml
-        
-        # Format the refiner prompt
-        refiner_prompt = format_refiner_template(
-            query=node.intent,
-            evidence=evidence or "",
-            desc_str=desc_str,
-            fk_str=fk_str,
-            sql=node.sql,
-            sqlite_error=error_message,
-            exception_class=exception_class
-        )
-        
-        # Log the refinement attempt
-        self.logger.info("="*60)
-        self.logger.info("SQL Refinement")
-        self.logger.info(f"Refining SQL for node: {node_id}")
-        self.logger.info(f"Error: {error_message}")
-        self.logger.info("="*60)
-        
-        # Set the current node for context
-        await self.tree_manager.set_current_node_id(node_id)
-        
-        # Store the refiner prompt in memory for the agent to use
-        await self.memory.set(f"node_{node_id}_refiner_prompt", refiner_prompt)
-        
-        # Run the refinement
-        task = "Refine the SQL query that encountered an error using the refiner prompt"
-        result = await self.run(task)
-        
-        # Clean up
-        await self.memory.delete(f"node_{node_id}_refiner_prompt")
-        
-        # Get the refined SQL
-        node = await self.tree_manager.get_node(node_id)
-        if node and node.sql:
-            self.logger.info("SQL successfully refined")
-            return node.sql
-        
-        return None
+    
     
     async def _get_schema_xml(self) -> str:
         """Get the database schema in XML format"""
@@ -570,46 +412,3 @@ For retries, explain what failed and what you changed."""
         
         return "\n".join(schema_parts)
     
-    async def generate_combined_sql(self, parent_node_id: str) -> Optional[str]:
-        """
-        Generate combined SQL for a parent node with children.
-        
-        Args:
-            parent_node_id: The ID of the parent node
-            
-        Returns:
-            The combined SQL or None if failed
-        """
-        # Get parent and children
-        parent = await self.tree_manager.get_node(parent_node_id)
-        children = await self.tree_manager.get_children(parent_node_id)
-        
-        if not parent or not children:
-            return await self.generate_sql(parent_node_id)
-        
-        # Check if all children have SQL
-        for child in children:
-            if not child.sql:
-                self.logger.warning(f"Child node {child.nodeId} missing SQL")
-                return None
-        
-        # Generate combined SQL based on strategy
-        self.logger.info("="*60)
-        self.logger.info("Generating Combined SQL")
-        self.logger.info(f"Combining results from {len(children)} sub-queries")
-        self.logger.info("="*60)
-        self.logger.debug(f"Generating combined SQL for parent {parent_node_id} with {len(children)} children")
-        
-        # Set the current node in QueryTreeManager
-        await self.tree_manager.set_current_node_id(parent_node_id)
-        
-        # Run with special task
-        task = "Generate combined SQL using child queries for the current parent node"
-        result = await self.run(task)
-        
-        # Get the node to check if it has SQL
-        node = await self.tree_manager.get_node(parent_node_id)
-        if node and node.sql:
-            return node.sql
-        
-        return None

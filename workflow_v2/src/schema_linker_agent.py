@@ -19,10 +19,10 @@ from database_schema_manager import DatabaseSchemaManager
 from query_tree_manager import QueryTreeManager
 from node_history_manager import NodeHistoryManager
 from memory_content_types import (
-    QueryNode, QueryMapping, TableMapping, ColumnMapping, JoinMapping,
-    TableSchema, ColumnInfo, NodeStatus
+    QueryNode, TableSchema, ColumnInfo, NodeStatus
 )
 from prompts import SQL_CONSTRAINTS
+from utils import parse_xml_hybrid, strip_quotes, ensure_list
 
 
 class SchemaLinkerAgent(BaseMemoryAgent):
@@ -44,6 +44,46 @@ class SchemaLinkerAgent(BaseMemoryAgent):
         self.tree_manager = QueryTreeManager(self.memory)
         self.history_manager = NodeHistoryManager(self.memory)
     
+    
+    def _log_linking_summary(self, linking_result: Dict[str, Any]) -> None:
+        """Log a concise summary of the linking result."""
+        # Log tables if present
+        if "selected_tables" in linking_result:
+            tables = linking_result["selected_tables"].get("table", [])
+            if not isinstance(tables, list):
+                tables = [tables] if tables else []
+            
+            if tables:
+                self.logger.info(f"Linked {len(tables)} table(s):")
+                for table in tables:
+                    if isinstance(table, dict):
+                        self.logger.info(f"  - {table.get('name', 'unknown')}: {table.get('purpose', '')}")
+        
+        # Log joins if present
+        if "joins" in linking_result:
+            joins_data = linking_result["joins"]
+            if isinstance(joins_data, dict):
+                joins = joins_data.get("join", [])
+                if not isinstance(joins, list):
+                    joins = [joins] if joins else []
+            else:
+                joins = []
+            
+            if joins:
+                self.logger.info(f"Joins: {len(joins)}")
+                for join in joins:
+                    if isinstance(join, dict):
+                        self.logger.info(f"  - {join.get('from_table', '')} → {join.get('to_table', '')}")
+    
+    def _extract_text(self, element: Optional[ET.Element], tag: str, default: str = "") -> str:
+        """Extract text from XML element safely."""
+        if element is None:
+            return default
+        found = element.find(tag)
+        if found is not None and found.text:
+            return found.text.strip()
+        return default
+    
     def _build_system_message(self) -> str:
         """Build the system message for schema linking"""
         return f"""You are a schema linking expert for text-to-SQL conversion.
@@ -56,26 +96,31 @@ class SchemaLinkerAgent(BaseMemoryAgent):
 5. **COLUMN DISCOVERY**: Show all potentially relevant columns with sample data before selecting the best ones
 
 ## Your Task
-Use a two-phase approach to link schema elements to the query:
+**PRIMARY GOAL**: Analyze the FULL user query and find ALL relevant schema elements that could be used to answer it.
 
-### Phase 1: Discovery and Validation
+Use a comprehensive approach to link schema elements to the complete query:
 
-**Step 1.1: Available Schema Elements**
+### Phase 1: Query Understanding and Discovery
+
+**Step 1.1: Analyze the Complete Query**
+- Read the full user query (not just a decomposed intent)
+- Identify ALL data elements mentioned or implied
+- Look for entities, attributes, conditions, aggregations, and relationships
+- Consider what data would be needed to fully answer this query
+
+**Step 1.2: Available Schema Elements**
 Before making any selections, list out:
 - All available table names from the schema
 - For each table, list ALL column names with their typical values
 - Identify foreign key relationships
 
-**Step 1.2: Comprehensive Column Search**
-For EVERY filter/condition term in the query:
+**Step 1.3: Comprehensive Column Search**
+For EVERY entity/condition/attribute mentioned in the query:
 - Search ALL tables for columns that could match
 - Check typical_values in EVERY column across ALL tables
 - Look for exact matches in typical_values first
 - Rank candidates by how well their typical_values match the query terms
-
-**Step 1.3: Query Analysis**
-- Analyze the node's intent for required data elements
-- Check if this is a retry (look for previous sql/executionResult/analysis)
+- **IMPORTANT**: Consider the query may be complex and need multiple tables/columns
 - If retry, identify specific issues to fix from evaluation feedback
 
 **Step 1.4: Single-Table Preference Check**
@@ -211,7 +256,13 @@ For retries, explain what changed and why the new approach should work."""
     
     async def _reader_callback(self, memory: KeyValueMemory, task: str, cancellation_token) -> Dict[str, Any]:
         """Read context from memory before schema linking"""
-        # Get current_node_id from QueryTreeManager
+        # Always use schema_linking (initialized by orchestrator)
+        schema_context = await memory.get("schema_linking")
+        if not schema_context:
+            self.logger.error("schema_linking not found - orchestrator should initialize this")
+            return {"error": "schema_linking not initialized by orchestrator"}
+        
+        # Get current_node_id from QueryTreeManager for node-specific operations
         current_node_id = await self.tree_manager.get_current_node_id()
         if not current_node_id:
             return {"error": "No current_node_id found"}
@@ -224,18 +275,16 @@ For retries, explain what changed and why the new approach should work."""
         # Convert entire node to dictionary for simple string representation
         node_dict = node.to_dict()
         
-        # Get parent node if exists
+        # Get parent and sibling info if node has parent
         parent_info = None
+        siblings_info = []
         if node.parentId:
             parent_node = await self.tree_manager.get_node(node.parentId)
             if parent_node:
                 parent_info = parent_node.to_dict()
-        
-        # Get sibling nodes if exists
-        siblings_info = []
-        if node.parentId:
-            siblings = await self.tree_manager.get_children(node.parentId)
-            siblings_info = [s.to_dict() for s in siblings if s.nodeId != current_node_id]
+                # Get siblings only if parent exists
+                siblings = await self.tree_manager.get_children(node.parentId)
+                siblings_info = [s.to_dict() for s in siblings if s.nodeId != current_node_id]
         
         # Get node operation history
         history = await self.history_manager.get_node_operations(current_node_id)
@@ -246,15 +295,21 @@ For retries, explain what changed and why the new approach should work."""
         analysis_key = f"node_{current_node_id}_analysis"
         evaluation_analysis = await self.memory.get(analysis_key)
         
-        # Build context with ALL node information - let the prompt guide how to use it
-        context = {
+        # Combine schema_linking with node-specific information
+        context = schema_context.copy()  # Start with schema context from orchestrator
+        
+        # Add node-specific information
+        context.update({
             "current_node": json.dumps(node_dict, indent=2),
             "parent_node": json.dumps(parent_info, indent=2) if parent_info else None,
             "sibling_nodes": json.dumps(siblings_info, indent=2) if siblings_info else None,
-            "node_history": json.dumps(history_dicts, indent=2) if history_dicts else None,  # ALL history
+            "node_history": json.dumps(history_dicts, indent=2) if history_dicts else None,
             "sql_evaluation_analysis": json.dumps(evaluation_analysis, indent=2) if evaluation_analysis else None,
-            "full_schema": await self._get_full_schema_xml()
-        }
+        })
+        
+        # Ensure we have the full schema (may be in context already or need to fetch)
+        if "full_schema" not in context:
+            context["full_schema"] = await self._get_full_schema_xml()
         
         # Remove None values
         context = {k: v for k, v in context.items() if v is not None}
@@ -280,20 +335,21 @@ For retries, explain what changed and why the new approach should work."""
             linking_result = self._parse_linking_xml(last_message)
             
             if linking_result:
-                # Create mapping from the linking result
-                mapping = await self._create_mapping_from_linking(linking_result)
+                # Store the schema analysis results back to context for other agents
+                await self._update_schema_linking(memory, linking_result)
                 
                 # Get the current node ID from QueryTreeManager
                 node_id = await self.tree_manager.get_current_node_id()
                 
                 if node_id:
-                    # Update the node with the mapping
-                    await self.tree_manager.update_node_mapping(node_id, mapping)
+                    # Store the entire linking result in the node's schema_linking field
+                    await self.tree_manager.update_node(node_id, {"schema_linking": linking_result})
+                    self.logger.info(f"Stored schema linking result in query tree node {node_id}")
                     
-                    # Record in history
-                    await self.history_manager.record_revise(
+                    # Record in history using record_create method
+                    await self.history_manager.record_create(
                         node_id=node_id,
-                        new_mapping=mapping
+                        intent="Schema linking completed"
                     )
                     
                     # Enhanced user-friendly logging
@@ -330,33 +386,20 @@ For retries, explain what changed and why the new approach should work."""
                                     self.logger.info(f"    LOW confidence matches: {len(low_conf)} found")
                                     
                             if discovery.get("selected"):
-                                selected_list = discovery["selected"]
-                                # Handle both list and single dict formats
-                                if not isinstance(selected_list, list):
-                                    selected_list = [selected_list] if selected_list else []
+                                selected_list = ensure_list(discovery["selected"])
                                 
                                 if len(selected_list) > 1:
                                     self.logger.info(f"    → SELECTED {len(selected_list)} COLUMNS:")
                                     for sel in selected_list:
                                         if sel.get("exact_value"):
-                                            # Strip quotes for display
-                                            display_value = sel['exact_value']
-                                            if display_value and len(display_value) >= 2:
-                                                if (display_value.startswith("'") and display_value.endswith("'")) or \
-                                                   (display_value.startswith('"') and display_value.endswith('"')):
-                                                    display_value = display_value[1:-1]
+                                            display_value = strip_quotes(sel['exact_value'])
                                             self.logger.info(f"        • {sel['table']}.{sel['column']} = '{display_value}'")
                                         else:
                                             self.logger.info(f"        • {sel['table']}.{sel['column']}")
                                 elif selected_list:
                                     sel = selected_list[0]
                                     if sel.get("exact_value"):
-                                        # Strip quotes for display
-                                        display_value = sel['exact_value']
-                                        if display_value and len(display_value) >= 2:
-                                            if (display_value.startswith("'") and display_value.endswith("'")) or \
-                                               (display_value.startswith('"') and display_value.endswith('"')):
-                                                display_value = display_value[1:-1]
+                                        display_value = strip_quotes(sel['exact_value'])
                                         self.logger.info(f"    → SELECTED: {sel['table']}.{sel['column']} = '{display_value}'")
                                     else:
                                         self.logger.info(f"    → SELECTED: {sel['table']}.{sel['column']}")
@@ -366,39 +409,13 @@ For retries, explain what changed and why the new approach should work."""
                         if linking_result.get("single_table_possible"):
                             best_table = linking_result.get("best_single_table", "")
                             self.logger.info(f"✓ Single-table solution POSSIBLE using table: {best_table}")
+                            if linking_result.get("single_table_solution"):
+                                self.logger.info("✓ Single-table solution SELECTED")
                         else:
                             self.logger.info("✗ Single-table solution NOT possible - multiple tables required")
                     
-                    # Log single table solution status
-                    if linking_result.get("single_table_solution"):
-                        self.logger.info("✓ Single-table solution SELECTED")
-                    
-                    # Log linked tables
-                    if mapping.tables:
-                        self.logger.info(f"Linked {len(mapping.tables)} table(s):")
-                        for table in mapping.tables:
-                            self.logger.info(f"  - {table.name}: {table.purpose}")
-                    
-                    # Log selected columns
-                    if mapping.columns:
-                        self.logger.info(f"Selected {len(mapping.columns)} column(s):")
-                        # Group columns by table
-                        cols_by_table = {}
-                        for col in mapping.columns:
-                            if col.table not in cols_by_table:
-                                cols_by_table[col.table] = []
-                            cols_by_table[col.table].append(col)
-                        
-                        for table, cols in cols_by_table.items():
-                            self.logger.info(f"  From {table}:")
-                            for col in cols:
-                                self.logger.info(f"    - {col.column} (used for: {col.usedFor})")
-                    
-                    # Log joins
-                    if mapping.joins:
-                        self.logger.info(f"Identified {len(mapping.joins)} join(s):")
-                        for join in mapping.joins:
-                            self.logger.info(f"  - {join.from_table} -> {join.to}: {join.on}")
+                    # Log summary based on linking_result
+                    self._log_linking_summary(linking_result)
                     
                     self.logger.info("="*60)
                     self.logger.info(f"Updated node {node_id} with schema mapping")
@@ -471,352 +488,26 @@ For retries, explain what changed and why the new approach should work."""
         return '\n'.join(xml_parts)
     
     def _parse_linking_xml(self, output: str) -> Optional[Dict[str, Any]]:
-        """Parse the schema linking XML output with enhanced structure"""
+        """Parse the schema linking XML output using hybrid approach"""
+        # Use the hybrid parsing utility
+        parsed = parse_xml_hybrid(output, 'schema_linking')
+        return parsed
+    
+    async def _update_schema_linking(self, memory: KeyValueMemory, linking_result: Dict[str, Any]) -> None:
+        """Update the schema_linking with new schema linking results"""
         try:
-            # Extract XML from output
-            xml_match = re.search(r'<schema_linking>.*?</schema_linking>', output, re.DOTALL)
-            if not xml_match:
-                # Try to find XML in code blocks
-                xml_match = re.search(r'```xml\s*\n(.*?)\n```', output, re.DOTALL)
-                if xml_match:
-                    xml_content = xml_match.group(1)
-                else:
-                    self.logger.error("No schema linking XML found in output")
-                    return None
+            # Get current context
+            context = await memory.get("schema_linking")
+            if context:
+                # Update with new schema analysis results
+                context["schema_analysis"] = linking_result
+                context["last_update"] = datetime.now().isoformat()
+                
+                # Store back to memory
+                await memory.set("schema_linking", context)
+                self.logger.debug("Updated schema_linking with new linking results")
             else:
-                xml_content = xml_match.group()
-            
-            # Try to parse XML
-            try:
-                root = ET.fromstring(xml_content)
-            except ET.ParseError as e:
-                self.logger.warning(f"XML parsing failed: {str(e)}")
-                self.logger.info("Attempting fallback parsing with regex...")
-                # Fallback to regex-based parsing for key elements
-                return self._fallback_parse_linking(xml_content)
-            
-            result = {
-                "tables": [],
-                "joins": [],
-                "sample_query": root.findtext("sample_query_pattern", "").strip(),
-                "column_discovery": {},
-                "single_table_solution": False
-            }
-            
-            # Parse column discovery section for enhanced logging
-            discovery_elem = root.find("column_discovery")
-            if discovery_elem is not None:
-                for term_elem in discovery_elem.findall("query_term"):
-                    original_term = term_elem.get("original", "")
-                    candidates = []
-                    
-                    # Parse all_candidates for the new structure
-                    all_candidates_elem = term_elem.find("all_candidates")
-                    if all_candidates_elem is not None:
-                        for candidate in all_candidates_elem.findall("candidate"):
-                            candidates.append({
-                                "table": candidate.get("table"),
-                                "column": candidate.get("column"),
-                                "typical_values": candidate.findtext("typical_values", "").strip(),
-                                "exact_match_value": candidate.findtext("exact_match_value", "").strip(),
-                                "confidence": candidate.get("confidence", "medium"),
-                                "reason": candidate.findtext("reason", "").strip()
-                            })
-                    else:
-                        # Fallback to old structure
-                        candidates_elem = term_elem.find("candidates")
-                        if candidates_elem is not None:
-                            for candidate in candidates_elem.findall("candidate"):
-                                candidates.append({
-                                    "table": candidate.get("table"),
-                                    "column": candidate.get("column"),
-                                    "sample_values": candidate.get("sample_values", ""),
-                                    "confidence": candidate.get("confidence", "medium"),
-                                    "reason": candidate.findtext("reason", "").strip()
-                                })
-                    
-                    # Handle both old single-selected and new multi-selected formats
-                    selected_list = []
-                    
-                    # Try new format with selected_columns
-                    selected_columns_elem = term_elem.find("selected_columns")
-                    if selected_columns_elem is not None:
-                        for col_elem in selected_columns_elem.findall("column"):
-                            selected_list.append({
-                                "table": col_elem.get("table"),
-                                "column": col_elem.get("column"),
-                                "exact_value": col_elem.findtext("exact_value", "").strip(),
-                                "reason": col_elem.findtext("reason", "").strip()
-                            })
-                    else:
-                        # Fallback to old single-selected format
-                        selected_elem = term_elem.find("selected")
-                        if selected_elem is not None:
-                            selected_list.append({
-                                "table": selected_elem.get("table"),
-                                "column": selected_elem.get("column"),
-                                "exact_value": selected_elem.findtext("exact_value", "").strip(),
-                                "reason": selected_elem.findtext("reason", "").strip()
-                            })
-                    
-                    result["column_discovery"][original_term] = {
-                        "candidates": candidates,
-                        "selected": selected_list  # Now a list instead of single item
-                    }
-            
-            # Parse single-table analysis
-            single_table_elem = root.find("single_table_analysis")
-            if single_table_elem is not None:
-                result["single_table_possible"] = single_table_elem.findtext("possible", "false").lower() == "true"
-                result["best_single_table"] = single_table_elem.findtext("best_single_table", "").strip()
-                if result["single_table_possible"]:
-                    result["single_table_solution"] = True
-            
-            # Parse selected tables
-            tables_elem = root.find("selected_tables")
-            if tables_elem is not None:
-                for table_elem in tables_elem.findall("table"):
-                    # Check if this is marked as single table solution
-                    single_table = table_elem.findtext("single_table_solution", "false").lower() == "true"
-                    if single_table:
-                        result["single_table_solution"] = True
-                    
-                    table_info = {
-                        "name": table_elem.get("name"),
-                        "alias": table_elem.get("alias", ""),
-                        "purpose": table_elem.findtext("purpose", "").strip(),
-                        "columns": []
-                    }
-                    
-                    # Parse columns
-                    columns_elem = table_elem.find("columns")
-                    if columns_elem is not None:
-                        for col_elem in columns_elem.findall("column"):
-                            column_info = {
-                                "name": col_elem.get("name"),
-                                "used_for": col_elem.get("used_for", "select"),
-                                "reason": col_elem.findtext("reason", "").strip()
-                            }
-                            table_info["columns"].append(column_info)
-                    
-                    result["tables"].append(table_info)
-            
-            # Parse joins
-            joins_elem = root.find("joins")
-            if joins_elem is not None:
-                for join_elem in joins_elem.findall("join"):
-                    join_info = {
-                        "from_table": join_elem.findtext("from_table", "").strip(),
-                        "from_column": join_elem.findtext("from_column", "").strip(),
-                        "to_table": join_elem.findtext("to_table", "").strip(),
-                        "to_column": join_elem.findtext("to_column", "").strip(),
-                        "join_type": join_elem.findtext("join_type", "INNER").strip()
-                    }
-                    result["joins"].append(join_info)
-            
-            return result
-            
-        except Exception as e:
-            self.logger.error(f"Error parsing schema linking XML: {str(e)}", exc_info=True)
-            return None
-    
-    async def _create_mapping_from_linking(self, linking_result: Dict[str, Any]) -> QueryMapping:
-        """Create QueryMapping from schema linking result"""
-        mapping = QueryMapping()
-        
-        # Build a lookup for exact values from column discovery
-        exact_values_lookup = {}
-        column_discovery = linking_result.get("column_discovery", {})
-        for term, discovery in column_discovery.items():
-            selected_list = discovery.get("selected", [])
-            # Handle both list and single dict formats
-            if not isinstance(selected_list, list):
-                selected_list = [selected_list] if selected_list else []
-            
-            # Process all selected columns for this term
-            for selected in selected_list:
-                if selected and selected.get("exact_value"):
-                    table = selected.get("table")
-                    column = selected.get("column")
-                    if table and column:
-                        key = f"{table}.{column}"
-                        exact_value = selected.get("exact_value")
-                        # Strip surrounding quotes if present (typical values often include quotes)
-                        if exact_value and len(exact_value) >= 2:
-                            if (exact_value.startswith("'") and exact_value.endswith("'")) or \
-                               (exact_value.startswith('"') and exact_value.endswith('"')):
-                                exact_value = exact_value[1:-1]
-                        exact_values_lookup[key] = exact_value
-        
-        # Add tables
-        for table_info in linking_result.get("tables", []):
-            table_mapping = TableMapping(
-                name=table_info["name"],
-                alias=table_info.get("alias", ""),
-                purpose=table_info.get("purpose", "")
-            )
-            mapping.tables.append(table_mapping)
-            
-            # Add columns
-            for col_info in table_info.get("columns", []):
-                # Look up exact value for this column
-                lookup_key = f"{table_info['name']}.{col_info['name']}"
-                exact_value = exact_values_lookup.get(lookup_key)
+                self.logger.warning("schema_linking not found during update")
                 
-                # Get data type from schema
-                data_type = None
-                column_info = await self.schema_manager.get_column(table_info["name"], col_info["name"])
-                if column_info:
-                    data_type = column_info.dataType
-                
-                column_mapping = ColumnMapping(
-                    table=table_info["name"],
-                    column=col_info["name"],
-                    usedFor=col_info.get("used_for", "select"),
-                    exactValue=exact_value,  # Include the exact value if found
-                    dataType=data_type  # Include the data type
-                )
-                mapping.columns.append(column_mapping)
-        
-        # Add joins
-        for join_info in linking_result.get("joins", []):
-            # Create join condition string
-            from_alias = ""
-            to_alias = ""
-            
-            # Find aliases for tables
-            for table in linking_result.get("tables", []):
-                if table["name"] == join_info["from_table"] and table.get("alias"):
-                    from_alias = table["alias"]
-                if table["name"] == join_info["to_table"] and table.get("alias"):
-                    to_alias = table["alias"]
-            
-            # Build join condition
-            from_ref = f"{from_alias}.{join_info['from_column']}" if from_alias else f"{join_info['from_table']}.{join_info['from_column']}"
-            to_ref = f"{to_alias}.{join_info['to_column']}" if to_alias else f"{join_info['to_table']}.{join_info['to_column']}"
-            
-            join_mapping = JoinMapping(
-                from_table=join_info["from_table"],
-                to=join_info["to_table"],
-                on=f"{from_ref} = {to_ref}"
-            )
-            if mapping.joins is None:
-                mapping.joins = []
-            mapping.joins.append(join_mapping)
-        
-        return mapping
-    
-    async def link_schema(self, node_id: str) -> Optional[QueryMapping]:
-        """
-        Link schema to a specific query node.
-        
-        Args:
-            node_id: The ID of the node to link schema to
-            
-        Returns:
-            The created QueryMapping or None if failed
-        """
-        self.logger.debug(f"Linking schema for node: {node_id}")
-        
-        # Set the current node in QueryTreeManager
-        await self.tree_manager.set_current_node_id(node_id)
-        
-        # Run the agent
-        task = "Link schema for the current query node"
-        result = await self.run(task)
-        
-        # Get the node to check if it has mapping
-        node = await self.tree_manager.get_node(node_id)
-        if node and node.mapping:
-            return node.mapping
-        
-        return None
-    
-    def _fallback_parse_linking(self, xml_content: str) -> Optional[Dict[str, Any]]:
-        """Fallback parser using regex when XML parsing fails"""
-        self.logger.info("Using fallback regex-based parser")
-        
-        result = {
-            "tables": [],
-            "joins": [],
-            "column_discovery": {},
-            "single_table_solution": False
-        }
-        
-        try:
-            # Extract selected tables
-            tables_match = re.search(r'<selected_tables>(.*?)</selected_tables>', xml_content, re.DOTALL)
-            if tables_match:
-                tables_content = tables_match.group(1)
-                # Find each table
-                for table_match in re.finditer(r'<table\s+name="([^"]+)"\s+alias="([^"]+)"[^>]*>(.*?)</table>', tables_content, re.DOTALL):
-                    table_name = table_match.group(1)
-                    alias = table_match.group(2)
-                    table_content = table_match.group(3)
-                    
-                    table_info = {
-                        "name": table_name,
-                        "alias": alias,
-                        "columns": []
-                    }
-                    
-                    # Extract columns for this table
-                    for col_match in re.finditer(r'<column\s+name="([^"]+)"\s+used_for="([^"]+)"[^>]*>', table_content):
-                        col_name = col_match.group(1)
-                        used_for = col_match.group(2)
-                        table_info["columns"].append({
-                            "name": col_name,
-                            "used_for": used_for
-                        })
-                    
-                    result["tables"].append(table_info)
-            
-            # Extract joins
-            joins_match = re.search(r'<joins>(.*?)</joins>', xml_content, re.DOTALL)
-            if joins_match:
-                joins_content = joins_match.group(1)
-                for join_match in re.finditer(r'<from_table>([^<]+)</from_table>.*?<from_column>([^<]+)</from_column>.*?<to_table>([^<]+)</to_table>.*?<to_column>([^<]+)</to_column>', joins_content, re.DOTALL):
-                    result["joins"].append({
-                        "from_table": join_match.group(1).strip(),
-                        "from_column": join_match.group(2).strip(),
-                        "to_table": join_match.group(3).strip(),
-                        "to_column": join_match.group(4).strip(),
-                        "join_type": "INNER"  # Default
-                    })
-            
-            # Extract column discovery with exact values
-            discovery_match = re.search(r'<column_discovery>(.*?)</column_discovery>', xml_content, re.DOTALL)
-            if discovery_match:
-                discovery_content = discovery_match.group(1)
-                for term_match in re.finditer(r'<query_term\s+original="([^"]+)"[^>]*>(.*?)</query_term>', discovery_content, re.DOTALL):
-                    term = term_match.group(1)
-                    term_content = term_match.group(2)
-                    
-                    # Look for selected columns with exact values
-                    selected_match = re.search(r'<selected_columns>(.*?)</selected_columns>', term_content, re.DOTALL)
-                    if selected_match:
-                        selected_content = selected_match.group(1)
-                        selected_columns = []
-                        
-                        for col_match in re.finditer(r'<column\s+table="([^"]+)"\s+column="([^"]+)"[^>]*>.*?<exact_value>([^<]*)</exact_value>', selected_content, re.DOTALL):
-                            selected_columns.append({
-                                "table": col_match.group(1),
-                                "column": col_match.group(2),
-                                "exact_value": col_match.group(3).strip()
-                            })
-                        
-                        if selected_columns:
-                            result["column_discovery"][term] = {"selected": selected_columns}
-            
-            # Extract single table analysis
-            single_table_match = re.search(r'<single_table_analysis>.*?<possible>([^<]+)</possible>', xml_content, re.DOTALL)
-            if single_table_match:
-                possible = single_table_match.group(1).strip().lower()
-                result["single_table_solution"] = possible == "true"
-            
-            self.logger.info(f"Fallback parser extracted: {len(result['tables'])} tables, {len(result['joins'])} joins")
-            return result
-            
         except Exception as e:
-            self.logger.error(f"Fallback parser also failed: {str(e)}", exc_info=True)
-            return None
+            self.logger.error(f"Error updating schema_linking: {str(e)}", exc_info=True)

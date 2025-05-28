@@ -51,271 +51,376 @@ class TaskStatusChecker(BaseTool):
         self.MAX_RETRIES = 3  # Maximum retry attempts per node
     
     async def analyze_tree(self) -> Dict[str, Any]:
-        """Analyze the tree and return status information"""
-        # Get the complete tree
+        """
+        Analyze tree and handle simple node selection rules.
+        
+        Key responsibilities:
+        1. Check schema context
+        2. Handle current node pointer (empty → root)
+        3. Categorize nodes by processing state
+        4. Apply simple node movement rules
+        5. Track retry limits
+        6. Generate status for orchestrator
+        """
+        
+        # Check schema context first (fundamental requirement)
+        schema_context = await self.memory.get("schema_linking")
+        has_schema_analysis = bool(schema_context and schema_context.get("schema_analysis"))
+        
+        # Check if tree exists
         tree = await self.tree_manager.get_tree()
-        if not tree or "nodes" not in tree:
-            return {"error": "No query tree found"}
+        if not tree or "nodes" not in tree or len(tree["nodes"]) == 0:
+            return {
+                "tree_exists": False,
+                "has_schema_analysis": has_schema_analysis,
+                "current_node_id": None,
+                "total_nodes": 0,
+                "nodes_by_state": {},
+                "completion_status": "no_tree"
+            }
         
-        # Get current node
+        # Handle current node pointer - simple rule: if empty, set to root
         current_node_id = await self.tree_manager.get_current_node_id()
+        root_id = tree.get("rootId")
         
-        # Analyze tree status
-        tree_analysis = {
-            "current_node_id": current_node_id,
-            "total_nodes": len(tree["nodes"]),
-            "processed_good": [],
-            "processed_poor": [],
-            "unprocessed": [],
-            "node_details": {},
-            "full_nodes": tree["nodes"]  # Store full node data for detailed access
+        if not current_node_id and root_id:
+            current_node_id = root_id
+            await self.tree_manager.set_current_node_id(current_node_id)
+            self.logger.info(f"Set current node to root: {current_node_id}")
+        
+        # Categorize all nodes by state for status reporting
+        nodes_by_state = {
+            "no_sql": [],
+            "need_eval": [], 
+            "good_sql": [],
+            "bad_sql": [],
+            "max_retries": []  # Nodes that hit retry limit
         }
         
-        # Examine each node
+        node_details = {}
+        
+        # Track tree structure for better node selection
+        tree_structure = {
+            "root_id": root_id,
+            "leaf_nodes": [],  # Nodes with no children
+            "parent_nodes": [],  # Nodes with children
+            "node_depths": {}  # For priority processing
+        }
+        
+        # Categorize each node by processing state and build tree structure
         for node_id, node_data in tree["nodes"].items():
             node_info = {
                 "node_id": node_id,
-                "intent": node_data.get("intent", "")[:80] + "...",
+                "intent": node_data.get("intent", ""),
                 "has_mapping": bool(node_data.get("mapping")),
                 "has_sql": bool(node_data.get("sql")),
-                "has_result": bool(node_data.get("executionResult")),
+                "has_execution": bool(node_data.get("executionResult")),
                 "is_root": not node_data.get("parentId"),
-                "children": node_data.get("childIds", [])
+                "parent_id": node_data.get("parentId"),
+                "children": node_data.get("childIds", []),
+                "retry_count": 0,
+                "reached_max_retries": False
             }
             
-            # Check evaluation status
-            if node_data.get("sql"):
-                analysis_key = f"node_{node_id}_analysis"
-                analysis = await self.memory.get(analysis_key)
-                if analysis:
-                    quality = analysis.get("result_quality", "").lower()
-                    node_info["quality"] = quality
-                    
-                    if quality in ["excellent", "good"]:
-                        tree_analysis["processed_good"].append(node_info)
-                    else:
-                        tree_analysis["processed_poor"].append(node_info)
-                else:
-                    # Has SQL but no evaluation yet
-                    node_info["needs_evaluation"] = True
-                    tree_analysis["unprocessed"].append(node_info)
+            # Build tree structure info
+            if not node_info["children"]:
+                tree_structure["leaf_nodes"].append(node_id)
             else:
-                # No SQL yet
-                tree_analysis["unprocessed"].append(node_info)
+                tree_structure["parent_nodes"].append(node_id)
             
-            tree_analysis["node_details"][node_id] = node_info
-        
-        # Determine the recommended next node
-        # First check if current node needs retry (prioritize current node)
-        if current_node_id and current_node_id in tree_analysis["node_details"]:
-            current_node_info = tree_analysis["node_details"][current_node_id]
+            # Get retry count for this node
+            retry_count = await self.history_manager.get_node_retry_count(node_id)
+            node_info["retry_count"] = retry_count
             
-            # Check if current node is in processed_poor list
-            for poor_node in tree_analysis["processed_poor"]:
-                if poor_node["node_id"] == current_node_id:
-                    # Check retry count
-                    retry_count = await self.history_manager.get_node_retry_count(current_node_id)
+            # Check if reached max retries
+            if retry_count >= self.MAX_RETRIES:
+                node_info["reached_max_retries"] = True
+                nodes_by_state["max_retries"].append(node_info)
+                node_info["state"] = "max_retries"
+            else:
+                # Determine node processing state
+                if not node_data.get("sql"):
+                    nodes_by_state["no_sql"].append(node_info)
+                    node_info["state"] = "no_sql"
                     
-                    if retry_count >= self.MAX_RETRIES:
-                        # Max retries reached - move to parent node for query re-decomposition
-                        full_node = tree_analysis["full_nodes"].get(current_node_id, {})
-                        parent_id = full_node.get("parentId")
+                elif node_data.get("sql") and not node_data.get("executionResult"):
+                    nodes_by_state["need_eval"].append(node_info)
+                    node_info["state"] = "need_eval"
+                    
+                elif node_data.get("sql") and node_data.get("executionResult"):
+                    # Check evaluation quality
+                    analysis_key = f"node_{node_id}_analysis"
+                    analysis = await self.memory.get(analysis_key)
+                    
+                    if analysis:
+                        quality = analysis.get("result_quality", "").lower()
+                        node_info["quality"] = quality
                         
-                        if parent_id:
-                            tree_analysis["recommended_node"] = parent_id
-                            tree_analysis["recommended_action"] = "reconsider_decomposition"
-                            tree_analysis["retry_count"] = retry_count
-                            tree_analysis["failed_node"] = current_node_id
-                            self.logger.warning(f"Node {current_node_id} has reached max retries ({retry_count}). Moving to parent {parent_id} for re-decomposition")
+                        if quality in ["excellent", "good"]:
+                            nodes_by_state["good_sql"].append(node_info)
+                            node_info["state"] = "good_sql"
                         else:
-                            # This is root node with max retries - fundamental issue with query
-                            tree_analysis["recommended_node"] = current_node_id
-                            tree_analysis["recommended_action"] = "query_unclear"
-                            tree_analysis["retry_count"] = retry_count
-                            self.logger.error(f"Root node {current_node_id} has reached max retries ({retry_count}). Query may be unclear or impossible")
+                            nodes_by_state["bad_sql"].append(node_info)
+                            node_info["state"] = "bad_sql"
+                            # Store detailed error info for orchestrator feedback loops
+                            exec_result = node_data.get("executionResult", {})
+                            node_info["error"] = exec_result.get("error", "")
+                            node_info["error_type"] = self._classify_error(exec_result.get("error", ""))
                     else:
-                        # Can still retry
-                        tree_analysis["recommended_node"] = current_node_id
-                        tree_analysis["recommended_action"] = "retry"
-                        tree_analysis["retry_count"] = retry_count
-                        self.logger.info(f"Current node {current_node_id} has poor quality - recommending retry (attempt {retry_count + 1}/{self.MAX_RETRIES})")
-                    
-                    return tree_analysis  # Early return to prioritize current node
+                        # Has execution result but no analysis - treat as needs evaluation
+                        nodes_by_state["need_eval"].append(node_info)
+                        node_info["state"] = "need_eval"
+            
+            node_details[node_id] = node_info
         
-        if tree_analysis["unprocessed"]:
-            # Prioritize nodes that need processing
-            # For complex queries, process children before parent
-            for node in tree_analysis["unprocessed"]:
-                if not node["children"]:  # Leaf nodes first
-                    tree_analysis["recommended_node"] = node["node_id"]
-                    tree_analysis["recommended_action"] = "process"
-                    break
-            else:
-                # If all unprocessed are parent nodes, pick the first one
-                tree_analysis["recommended_node"] = tree_analysis["unprocessed"][0]["node_id"]
-                tree_analysis["recommended_action"] = "process"
+        # Apply simple node movement rules
+        current_node_info = node_details.get(current_node_id) if current_node_id else None
         
-        elif tree_analysis["processed_poor"]:
-            # Other nodes that need improvement (if current node wasn't poor)
-            tree_analysis["recommended_node"] = tree_analysis["processed_poor"][0]["node_id"]
-            tree_analysis["recommended_action"] = "retry"
+        # Rule: If current node has good SQL or reached max retries, move to next
+        if current_node_info and current_node_info.get("state") in ["good_sql", "max_retries"]:
+            next_node = self._select_next_unprocessed_node(nodes_by_state, tree_structure)
+            
+            if next_node:
+                await self.tree_manager.set_current_node_id(next_node)
+                current_node_id = next_node
+                self.logger.info(f"Moved to next unprocessed node: {next_node}")
         
-        else:
-            # All nodes processed with good results
-            tree_analysis["recommended_action"] = "complete"
+        # Determine completion status
+        completion_status = self._determine_completion_status(nodes_by_state, has_schema_analysis)
         
-        self.logger.info(f"Tree status: {len(tree_analysis['processed_good'])} good, "
-                        f"{len(tree_analysis['processed_poor'])} poor, "
-                        f"{len(tree_analysis['unprocessed'])} unprocessed")
-        
-        return tree_analysis
+        return {
+            "tree_exists": True,
+            "has_schema_analysis": has_schema_analysis,
+            "current_node_id": current_node_id,
+            "total_nodes": len(tree["nodes"]),
+            "nodes_by_state": nodes_by_state,
+            "node_details": node_details,
+            "tree_structure": tree_structure,
+            "completion_status": completion_status,
+            "current_node_info": current_node_info,
+            "full_tree": tree  # For orchestrator use
+        }
     
-    def generate_action_message(self, tree_analysis: Dict[str, Any]) -> str:
-        """Generate the ACTION message based on tree analysis"""
-        # Handle error case first
-        if tree_analysis.get("error"):
-            return f"STATUS REPORT:\n- Error: {tree_analysis['error']}\n\nACTION: ERROR: {tree_analysis['error']}"
+    def _classify_error(self, error_msg: str) -> str:
+        """Classify error message for orchestrator feedback loop decisions."""
+        if not error_msg:
+            return "unknown"
         
-        # Extract counts
-        total = tree_analysis.get("total_nodes", 0)
-        good_count = len(tree_analysis.get("processed_good", []))
-        poor_count = len(tree_analysis.get("processed_poor", []))
-        unprocessed_count = len(tree_analysis.get("unprocessed", []))
+        error_lower = error_msg.lower()
         
-        # Build status report
-        status_report = f"""STATUS REPORT:
-- Total nodes: {total}
-- Processed with good results: {good_count}
-- Needs processing: {unprocessed_count}
-- Needs improvement: {poor_count}"""
+        # Schema-related errors
+        if any(keyword in error_lower for keyword in [
+            "table", "column", "no such", "not found", "doesn't exist", 
+            "unknown table", "unknown column", "ambiguous column"
+        ]):
+            return "schema"
         
-        # Get current node details
-        current_node_content = ""
-        current_node_id = tree_analysis.get("current_node_id")
-        if current_node_id and current_node_id in tree_analysis.get("full_nodes", {}):
-            # Get full node data
-            full_node = tree_analysis["full_nodes"][current_node_id]
-            node_info = tree_analysis["node_details"].get(current_node_id, {})
-            
-            current_node_content = f"""
-CURRENT NODE CONTENT:
-- Node ID: {current_node_id}
-- Intent: {full_node.get("intent", "No intent")}
-- Status: {full_node.get("status", "unknown")}
-- Parent ID: {full_node.get("parentId", "None")}
-- Children: {full_node.get("childIds", [])}"""
-            
-            # Add mapping info if available
-            if full_node.get("mapping"):
-                mapping = full_node["mapping"]
-                current_node_content += "\n- Mapping:"
-                if mapping.get("tables"):
-                    tables = [t.get("name", "unknown") for t in mapping["tables"]]
-                    current_node_content += f"\n  - Tables: {', '.join(tables)}"
-                if mapping.get("columns"):
-                    cols = [f"{c.get('table', 'unknown')}.{c.get('column', 'unknown')}" for c in mapping["columns"][:5]]
-                    current_node_content += f"\n  - Columns: {', '.join(cols)}"
-                    if len(mapping["columns"]) > 5:
-                        current_node_content += f" (and {len(mapping['columns']) - 5} more)"
-            
-            # Add SQL if available
-            if full_node.get("sql"):
-                sql_preview = full_node["sql"].strip().replace('\n', ' ')[:150]
-                current_node_content += f"\n- SQL: {sql_preview}"
-                if len(full_node["sql"]) > 150:
-                    current_node_content += "..."
-            
-            # Add execution result info if available
-            if full_node.get("executionResult"):
-                exec_result = full_node["executionResult"]
-                current_node_content += f"\n- Execution Result:"
-                current_node_content += f"\n  - Status: {exec_result.get('status', 'unknown')}"
-                current_node_content += f"\n  - Row count: {exec_result.get('rowCount', 0)}"
-                if exec_result.get("error"):
-                    current_node_content += f"\n  - Error: {exec_result['error']}"
-                elif exec_result.get("data") and len(exec_result["data"]) > 0:
-                    # Show first row of data
-                    first_row = exec_result["data"][0]
-                    if isinstance(first_row, dict):
-                        preview = str(first_row)[:100]
-                    else:
-                        preview = str(first_row)[:100]
-                    current_node_content += f"\n  - First row: {preview}..."
-            
-            # Add quality info if available
-            if "quality" in node_info:
-                current_node_content += f"\n- Evaluation Quality: {node_info['quality']}"
+        # SQL syntax/logic errors  
+        elif any(keyword in error_lower for keyword in [
+            "syntax", "group by", "having", "subquery", "join",
+            "near", "unexpected", "syntax error"
+        ]):
+            return "syntax"
         
-        # Determine action based on analysis
-        if tree_analysis.get("error"):
-            action = f"ACTION: ERROR: {tree_analysis['error']}"
+        # Data type errors
+        elif any(keyword in error_lower for keyword in [
+            "type", "cast", "convert", "datatype", "mismatch"
+        ]):
+            return "datatype"
         
-        elif tree_analysis["recommended_action"] == "complete":
-            action = f"ACTION: TASK COMPLETE: All nodes ({unprocessed_count} + {poor_count} = 0) have been successfully processed"
-        
-        elif tree_analysis["recommended_action"] == "process":
-            node_id = tree_analysis["recommended_node"]
-            node_info = tree_analysis["node_details"].get(node_id, {})
-            intent = node_info.get("intent", "unknown intent")
-            if node_info.get("needs_evaluation"):
-                action = f"ACTION: PROCESS NODE: {node_id} needs evaluation of its SQL results"
-            else:
-                action = f"ACTION: PROCESS NODE: {node_id} needs SQL generation for '{intent}'"
-        
-        elif tree_analysis["recommended_action"] == "retry":
-            node_id = tree_analysis["recommended_node"]
-            node_info = tree_analysis["node_details"].get(node_id, {})
-            quality = node_info.get("quality", "poor")
-            retry_count = tree_analysis.get("retry_count", 0)
-            if node_id == current_node_id:
-                action = f"ACTION: RETRY NODE: Current node {node_id} has {quality} quality results and needs improvement (retry {retry_count + 1}/{self.MAX_RETRIES})"
-            else:
-                action = f"ACTION: RETRY NODE: {node_id} has {quality} quality results and needs improvement (changing from {current_node_id})"
-        
-        elif tree_analysis["recommended_action"] == "reconsider_decomposition":
-            parent_node_id = tree_analysis["recommended_node"]
-            failed_node_id = tree_analysis.get("failed_node", "unknown")
-            retry_count = tree_analysis.get("retry_count", 0)
-            action = f"ACTION: RECONSIDER DECOMPOSITION: Node {failed_node_id} failed after {retry_count} retries. Moving to parent node {parent_node_id}. The query decomposition may be unclear or incorrect - consider alternative approaches"
-        
-        elif tree_analysis["recommended_action"] == "query_unclear":
-            node_id = tree_analysis["recommended_node"]
-            retry_count = tree_analysis.get("retry_count", 0)
-            action = f"ACTION: QUERY UNCLEAR: Root node {node_id} failed after {retry_count} retries. The query may be ambiguous, impossible to answer, or require domain knowledge not in the schema"
+        # Empty result (might need different approach)
+        elif any(keyword in error_lower for keyword in [
+            "empty", "no rows", "zero rows", "no results"
+        ]):
+            return "empty_result"
         
         else:
-            action = "ACTION: ERROR: Unknown tree state"
+            return "unknown"
+    
+    def _select_next_unprocessed_node(self, nodes_by_state: Dict[str, List], tree_structure: Dict[str, Any]) -> Optional[str]:
+        """
+        Select next unprocessed node with smart priority:
+        1. Leaf nodes first (easier to process)
+        2. Then parent nodes
+        3. Priority: no_sql > need_eval > bad_sql
+        """
         
-        return f"{status_report}{current_node_content}\n\n{action}"
+        # Get all unprocessed nodes
+        unprocessed_by_priority = [
+            ("no_sql", nodes_by_state["no_sql"]),
+            ("need_eval", nodes_by_state["need_eval"]), 
+            ("bad_sql", nodes_by_state["bad_sql"])
+        ]
+        
+        # For each priority level, prefer leaf nodes first
+        for state_name, node_list in unprocessed_by_priority:
+            if not node_list:
+                continue
+                
+            # Separate leaf nodes and parent nodes
+            leaf_nodes = [node for node in node_list 
+                         if node["node_id"] in tree_structure["leaf_nodes"]]
+            parent_nodes = [node for node in node_list 
+                           if node["node_id"] in tree_structure["parent_nodes"]]
+            
+            # Prefer leaf nodes first
+            if leaf_nodes:
+                return leaf_nodes[0]["node_id"]
+            elif parent_nodes:
+                return parent_nodes[0]["node_id"]
+        
+        return None
+    
+    def _determine_completion_status(self, nodes_by_state: Dict[str, List], has_schema_analysis: bool) -> str:
+        """Determine overall completion status."""
+        
+        if not has_schema_analysis:
+            return "need_schema"
+        
+        # Count active unprocessed nodes (excluding max_retries)
+        active_unprocessed = (len(nodes_by_state["no_sql"]) + 
+                            len(nodes_by_state["need_eval"]) + 
+                            len(nodes_by_state["bad_sql"]))
+        
+        if active_unprocessed == 0:
+            return "complete"
+        elif len(nodes_by_state["good_sql"]) > 0 and active_unprocessed > 0:
+            return "in_progress"
+        else:
+            return "processing"
+    
+    def generate_status_report(self, tree_analysis: Dict[str, Any]) -> str:
+        """
+        Generate clear, structured status report for orchestrator agent.
+        
+        The report provides all information needed for feedback loop decisions:
+        - Schema context status
+        - Tree existence and completion status  
+        - Current node details and state
+        - Error classification for context changes
+        - Processing progress summary
+        """
+        
+        # Handle no tree case
+        if not tree_analysis.get("tree_exists"):
+            has_schema = tree_analysis.get("has_schema_analysis", False)
+            if not has_schema:
+                return "STATUS: No schema analysis found\nNEXT: Call schema_linker to analyze schema"
+            else:
+                return "STATUS: No query tree found\nNEXT: Call query_analyzer to create tree structure"
+        
+        # Extract key information
+        completion_status = tree_analysis.get("completion_status", "unknown")
+        current_node_id = tree_analysis.get("current_node_id")
+        current_node_info = tree_analysis.get("current_node_info", {})
+        nodes_by_state = tree_analysis.get("nodes_by_state", {})
+        has_schema = tree_analysis.get("has_schema_analysis", False)
+        
+        # Build structured status report
+        status_lines = []
+        
+        # Overall status
+        if completion_status == "complete":
+            status_lines.append("STATUS: All nodes processed successfully")
+            status_lines.append("TERMINATE")
+            return "\n".join(status_lines)
+        elif completion_status == "need_schema":
+            status_lines.append("STATUS: No schema analysis found")
+            status_lines.append("NEXT: Call schema_linker to analyze schema")
+            return "\n".join(status_lines)
+        
+        # Progress summary
+        total_nodes = tree_analysis.get("total_nodes", 0)
+        no_sql_count = len(nodes_by_state.get("no_sql", []))
+        need_eval_count = len(nodes_by_state.get("need_eval", []))
+        good_sql_count = len(nodes_by_state.get("good_sql", []))
+        bad_sql_count = len(nodes_by_state.get("bad_sql", []))
+        max_retries_count = len(nodes_by_state.get("max_retries", []))
+        
+        status_lines.extend([
+            f"PROGRESS: {good_sql_count}/{total_nodes} nodes complete",
+            f"PENDING: {no_sql_count} no_sql, {need_eval_count} need_eval, {bad_sql_count} bad_sql",
+            f"FAILED: {max_retries_count} reached max retries"
+        ])
+        
+        # Current node details
+        if current_node_id and current_node_info:
+            state = current_node_info.get('state', 'unknown')
+            intent = current_node_info.get('intent', 'N/A')[:80]
+            retry_count = current_node_info.get('retry_count', 0)
+            
+            status_lines.extend([
+                "",
+                f"CURRENT NODE: {current_node_id}",
+                f"State: {state}",
+                f"Intent: {intent}",
+                f"Retries: {retry_count}/{self.MAX_RETRIES}"
+            ])
+            
+            # Add state-specific details
+            if state == "no_sql":
+                status_lines.append("NEXT: Call sql_generator to generate SQL")
+                
+            elif state == "need_eval":
+                status_lines.append("NEXT: Call sql_evaluator to evaluate SQL")
+                
+            elif state == "bad_sql":
+                error = current_node_info.get('error', '')
+                error_type = current_node_info.get('error_type', 'unknown')
+                quality = current_node_info.get('quality', 'unknown')
+                
+                status_lines.extend([
+                    f"Quality: {quality}",
+                    f"Error type: {error_type}",
+                    f"Error: {error[:100]}{'...' if len(error) > 100 else ''}"
+                ])
+                
+                # Feedback loop guidance
+                if error_type == "schema":
+                    status_lines.append("NEXT: Call schema_linker to change schema context")
+                elif error_type in ["syntax", "datatype"]:
+                    status_lines.append("NEXT: Call query_analyzer to change decomposition context")
+                else:
+                    status_lines.append("NEXT: Call schema_linker (most common fix)")
+                    
+            elif state == "good_sql":
+                quality = current_node_info.get('quality', 'unknown')
+                status_lines.extend([
+                    f"Quality: {quality}",
+                    "NEXT: TaskStatusChecker will move to next node"
+                ])
+                
+            elif state == "max_retries":
+                status_lines.extend([
+                    f"Reached max retries ({retry_count})",
+                    "NEXT: TaskStatusChecker will move to next node"
+                ])
+        
+        return "\n".join(status_lines)
     
     async def run(self, args: TaskStatusCheckerArgs, cancellation_token=None) -> str:
         """
-        Check the current task status and determine next action.
+        Check the current task status and generate status report.
+        Simple node selection rules are handled internally.
         
         Args:
             args: TaskStatusCheckerArgs with optional task field
             cancellation_token: Optional cancellation token (for AutoGen compatibility)
         
         Returns:
-            A status report with clear action directive
+            A status report for the orchestrator to make agent decisions
         """
         # Handle case where args might be a string (for backward compatibility)
         if isinstance(args, str):
-            # Convert string to TaskStatusCheckerArgs
             args = TaskStatusCheckerArgs(task=args)
         
-        self.logger.info("Checking overall task status...")
+        self.logger.debug("Analyzing tree status and handling node selection...")
         
-        # Analyze the tree
+        # Analyze tree and handle simple node selection
         tree_analysis = await self.analyze_tree()
         
-        # Update the current node if we have a recommendation
-        if tree_analysis.get("recommended_node") and tree_analysis["recommended_action"] != "complete":
-            await self.tree_manager.set_current_node_id(tree_analysis["recommended_node"])
-            self.logger.info(f"Updated current node to: {tree_analysis['recommended_node']}")
-        
-        # Generate and return the action message
-        return self.generate_action_message(tree_analysis)
+        # Generate status report for orchestrator
+        return self.generate_status_report(tree_analysis)
     
     def get_tool(self):
         """Return self as the tool instance for use with agents"""

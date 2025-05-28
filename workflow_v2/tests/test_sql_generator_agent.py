@@ -22,8 +22,7 @@ sys.path.append(str(Path(__file__).parent.parent / 'src'))
 from keyvalue_memory import KeyValueMemory
 from memory_content_types import (
     TaskContext, QueryNode, NodeStatus, TaskStatus,
-    QueryMapping, TableMapping, ColumnMapping, JoinMapping,
-    TableSchema, ColumnInfo, CombineStrategyType
+    TableSchema, ColumnInfo
 )
 from task_context_manager import TaskContextManager
 from query_tree_manager import QueryTreeManager
@@ -109,42 +108,57 @@ class TestSQLGeneratorAgent:
         )
         await schema_manager.add_table(satscores_schema)
     
-    async def create_test_node_with_mapping(self, memory: KeyValueMemory, intent: str, 
+    async def create_test_node_with_schema_linking(self, memory: KeyValueMemory, intent: str, 
                                            tables: List[str], columns: List[Tuple[str, str]], 
                                            joins: Optional[List[Dict]] = None) -> str:
-        """Create a test node with pre-defined mapping"""
+        """Create a test node with pre-defined schema linking results"""
         tree_manager = QueryTreeManager(memory)
         
         # Create node
         node_id = await tree_manager.initialize(intent)
         
-        # Create mapping
-        mapping = QueryMapping()
+        # Create schema linking result as dictionary (as SchemaLinkerAgent would)
+        schema_linking = {
+            "selected_tables": [],
+            "selected_columns": [],
+            "joins": []
+        }
         
         # Add tables
         for table_name in tables:
-            mapping.tables.append(TableMapping(name=table_name))
+            schema_linking["selected_tables"].append({
+                "name": table_name,
+                "purpose": f"Table {table_name} for the query"
+            })
         
         # Add columns
         for table, column in columns:
-            mapping.columns.append(ColumnMapping(
-                table=table,
-                column=column,
-                usedFor="select"
-            ))
+            schema_linking["selected_columns"].append({
+                "table": table,
+                "column": column,
+                "used_for": "select"
+            })
         
         # Add joins if provided
         if joins:
-            mapping.joins = []
             for join_info in joins:
-                mapping.joins.append(JoinMapping(
-                    from_table=join_info["from_table"],
-                    to=join_info["to_table"],
-                    on=join_info["on"]
-                ))
+                schema_linking["joins"].append({
+                    "from_table": join_info["from_table"],
+                    "to_table": join_info["to_table"],
+                    "on": join_info["on"]
+                })
         
-        # Update node with mapping
-        await tree_manager.update_node_mapping(node_id, mapping)
+        # Update node with schema linking results in schema_linking
+        await tree_manager.update_node(node_id, {"schema_linking": schema_linking})
+        
+        # Also update schema_linking as SchemaLinkerAgent would
+        schema_context = await memory.get("schema_linking") or {}
+        schema_context["schema_analysis"] = schema_linking
+        schema_context["last_update"] = "2024-01-01T00:00:00"
+        await memory.set("schema_linking", schema_context)
+        
+        # Set as current node for SQL generation
+        await tree_manager.set_current_node_id(node_id)
         
         return node_id
     
@@ -156,7 +170,7 @@ class TestSQLGeneratorAgent:
         memory = await self.setup_test_environment(query, "test_simple")
         
         # Create a node with mapping
-        node_id = await self.create_test_node_with_mapping(
+        node_id = await self.create_test_node_with_schema_linking(
             memory,
             intent="Find the maximum eligible free rate for K-12 students in schools located in Alameda County",
             tables=["schools", "frpm"],
@@ -175,8 +189,8 @@ class TestSQLGeneratorAgent:
             "timeout": 60
         }, debug=True)
         
-        # Run the agent
-        result = await agent.run(f"node:{node_id} - Generate SQL for this query node")
+        # Run the agent - SQLGenerator uses current_node_id from tree manager
+        result = await agent.run("Generate SQL for current node")
         
         # Verify the agent ran and returned a result
         assert result is not None
@@ -187,11 +201,13 @@ class TestSQLGeneratorAgent:
         tree_manager = QueryTreeManager(memory)
         node = await tree_manager.get_node(node_id)
         assert node is not None
-        assert node.sql is not None
-        assert "SELECT" in node.sql.upper()
+        assert node.generation is not None
+        assert "sql" in node.generation
+        assert node.generation["sql"] is not None
+        assert "SELECT" in node.generation["sql"].upper()
         
         print(f"\nGenerated SQL:")
-        print(node.sql)
+        print(node.generation["sql"])
         
         # Verify the LLM response structure
         last_message = result.messages[-1].content
@@ -205,7 +221,7 @@ class TestSQLGeneratorAgent:
         memory = await self.setup_test_environment(query, "test_aggregation")
         
         # Create a node with mapping
-        node_id = await self.create_test_node_with_mapping(
+        node_id = await self.create_test_node_with_schema_linking(
             memory,
             intent="Calculate average SAT math score for schools with enrollment over 500",
             tables=["satscores", "frpm"],
@@ -224,8 +240,8 @@ class TestSQLGeneratorAgent:
             "timeout": 60
         })
         
-        # Run the agent
-        result = await agent.run(f"node:{node_id} - Generate SQL for this query node")
+        # Run the agent - SQLGenerator uses current_node_id from tree manager
+        result = await agent.run("Generate SQL for current node")
         
         # Verify result
         assert result is not None
@@ -234,12 +250,14 @@ class TestSQLGeneratorAgent:
         # Check generated SQL
         tree_manager = QueryTreeManager(memory)
         node = await tree_manager.get_node(node_id)
-        assert node.sql is not None
-        assert "AVG" in node.sql.upper()
-        assert "WHERE" in node.sql.upper()
+        assert node.generation is not None
+        assert "sql" in node.generation
+        assert node.generation["sql"] is not None
+        assert "AVG" in node.generation["sql"].upper()
+        assert "WHERE" in node.generation["sql"].upper()
         
         print(f"\nAggregation SQL:")
-        print(node.sql)
+        print(node.generation["sql"])
     
     @pytest.mark.asyncio
     @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set") 
@@ -249,7 +267,7 @@ class TestSQLGeneratorAgent:
         memory = await self.setup_test_environment(query, "test_reader")
         
         # Create a test node
-        node_id = await self.create_test_node_with_mapping(
+        node_id = await self.create_test_node_with_schema_linking(
             memory,
             intent="Find all schools",
             tables=["schools"],
@@ -259,7 +277,7 @@ class TestSQLGeneratorAgent:
         agent = SQLGeneratorAgent(memory, llm_config={"model_name": "gpt-4o"})
         
         # Test reader callback directly
-        context = await agent._reader_callback(memory, f"node:{node_id}", None)
+        context = await agent._reader_callback(memory, "task", None)
         
         assert context is not None
         assert "current_node" in context
@@ -268,8 +286,10 @@ class TestSQLGeneratorAgent:
         import json
         current_node = json.loads(context["current_node"])
         assert current_node["intent"] == "Find all schools"
-        assert "mapping" in current_node
-        assert "tables" in current_node["mapping"]
+        
+        # The schema linking info should be in schema_linking
+        assert "schema_linking" in current_node
+        assert "selected_tables" in current_node["schema_linking"]
         
         print(f"\nReader callback context keys: {list(context.keys())}")
     
@@ -327,14 +347,17 @@ class TestSQLGeneratorAgent:
         child1 = QueryNode(
             nodeId="child1",
             intent="Find top 10 schools by enrollment",
-            mapping=QueryMapping(),
-            sql="SELECT CDSCode FROM frpm ORDER BY \"Enrollment (K-12)\" DESC LIMIT 10",
             parentId=parent_id
         )
+        # Add SQL generation result
+        child1.generation = {
+            "sql": "SELECT CDSCode FROM frpm ORDER BY \"Enrollment (K-12)\" DESC LIMIT 10",
+            "explanation": "Get top 10 schools by enrollment"
+        }
         await tree_manager.add_node(child1, parent_id)
         
         # Create parent mapping that references child results
-        parent_node_id = await self.create_test_node_with_mapping(
+        parent_node_id = await self.create_test_node_with_schema_linking(
             memory,
             intent="Calculate average SAT scores for top schools",
             tables=["satscores"],
@@ -353,16 +376,20 @@ class TestSQLGeneratorAgent:
             "timeout": 60
         })
         
-        result = await agent.run(f"node:{parent_node_id} - Generate SQL for this query node")
+        # Set current node and run
+        await tree_manager.set_current_node_id(parent_node_id)
+        result = await agent.run("Generate SQL for current node")
         
         # Check result
         assert result is not None
         
         parent_node = await tree_manager.get_node(parent_node_id)
-        assert parent_node.sql is not None
+        assert parent_node.generation is not None
+        assert "sql" in parent_node.generation
+        assert parent_node.generation["sql"] is not None
         
         print(f"\nParent SQL with child reference:")
-        print(parent_node.sql)
+        print(parent_node.generation["sql"])
     
     @pytest.mark.asyncio
     @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
@@ -395,7 +422,7 @@ class TestSQLGeneratorAgent:
             memory = await self.setup_test_environment(test_case['query'], f"bird_test_{i}")
             
             # Create node with mapping
-            node_id = await self.create_test_node_with_mapping(
+            node_id = await self.create_test_node_with_schema_linking(
                 memory,
                 intent=test_case['intent'],
                 tables=test_case['tables'],
@@ -409,8 +436,8 @@ class TestSQLGeneratorAgent:
                 "timeout": 60
             })
             
-            # Run the agent
-            result = await agent.run(f"node:{node_id} - Generate SQL for this query node")
+            # Run the agent - SQLGenerator uses current_node_id from tree manager
+            result = await agent.run("Generate SQL for current node")
             
             assert result is not None
             assert len(result.messages) > 0
@@ -418,9 +445,11 @@ class TestSQLGeneratorAgent:
             # Check generated SQL
             tree_manager = QueryTreeManager(memory)
             node = await tree_manager.get_node(node_id)
-            assert node.sql is not None
+            assert node.generation is not None
+            assert "sql" in node.generation
+            assert node.generation["sql"] is not None
             
-            print(f"Generated SQL: {node.sql}")
+            print(f"Generated SQL: {node.generation['sql']}")
 
 
 if __name__ == "__main__":

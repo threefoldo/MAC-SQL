@@ -19,6 +19,26 @@ SQL_CONSTRAINTS = """
 - Ensure all columns are qualified with table aliases to avoid ambiguity
 - Use CAST for type conversions in SQLite
 - Include only necessary columns (avoid SELECT *)
+
+【Evidence Priority Rules】
+- When evidence provides a formula (e.g., "rate = count / total"), ALWAYS use the formula instead of pre-calculated columns
+- Evidence formulas override direct column matches - trust the evidence as domain knowledge
+- If evidence defines a calculation, implement it exactly as specified
+- Example: If evidence says "rate = A / B", calculate it even if a "rate" column exists
+
+【Comparison Operator Rules】
+- For existence checks (e.g., "has items meeting criteria X"), use > 0 NOT >= specific_sample_value
+- Sample values in schema are EXAMPLES, not thresholds for queries
+- "Greater than or equal to X" in query means actual comparison to X, not to sample values from schema
+- When a column counts occurrences (e.g., "NumberOfX"), query "has X" means use > 0, not >= sample_value
+
+【Error Context Preservation】
+- When retrying after errors, address the SPECIFIC issues identified by the evaluator
+- Common retry fixes:
+  - "NULL values in results" → Add IS NOT NULL conditions
+  - "Wrong number of columns" → Check if selecting from correct table  
+  - "Zero results" → Verify filter values match exactly with data
+  - "Wrong calculation" → Check if using evidence formula correctly
 """
 
 # Pattern for parsing sub-questions in decomposition

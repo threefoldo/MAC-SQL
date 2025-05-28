@@ -22,7 +22,6 @@ sys.path.append(str(Path(__file__).parent.parent / 'src'))
 from keyvalue_memory import KeyValueMemory
 from memory_content_types import (
     TaskContext, QueryNode, NodeStatus, TaskStatus,
-    QueryMapping, TableMapping, ColumnMapping, JoinMapping,
     TableSchema, ColumnInfo, ExecutionResult
 )
 from task_context_manager import TaskContextManager
@@ -100,8 +99,10 @@ class TestSQLEvaluatorAgent:
         # Create node
         node_id = await tree_manager.initialize(intent)
         
-        # Update node with SQL
+        # Update node with SQL and generation field
         await tree_manager.update_node_sql(node_id, sql)
+        # Also update generation field as SQLGeneratorAgent would
+        await tree_manager.update_node(node_id, {"generation": {"sql": sql, "query_type": "simple"}})
         
         return node_id
     
@@ -141,9 +142,15 @@ class TestSQLEvaluatorAgent:
             row_count=1
         )
         
-        # Store execution result in node
+        # Store execution result in node's evaluation field
         tree_manager = QueryTreeManager(memory)
         await tree_manager.update_node_result(node_id, execution_result, success=True)
+        # Also store in evaluation field as SQLEvaluatorAgent expects
+        await tree_manager.update_node(node_id, {
+            "evaluation": {
+                "execution_result": execution_result.to_dict()
+            }
+        })
         
         # Create evaluator
         agent = SQLEvaluatorAgent(memory, llm_config={
@@ -152,8 +159,8 @@ class TestSQLEvaluatorAgent:
             "timeout": 60
         }, debug=True)
         
-        # Run the agent
-        result = await agent.run(f"node:{node_id} - Evaluate SQL execution results")
+        # Run the agent - SQLEvaluator uses current_node_id from tree manager
+        result = await agent.run("Evaluate SQL execution results")
         
         # Verify the agent ran
         assert result is not None
@@ -185,6 +192,12 @@ class TestSQLEvaluatorAgent:
         # Store execution result
         tree_manager = QueryTreeManager(memory)
         await tree_manager.update_node_result(node_id, execution_result, success=False)
+        # Also store in evaluation field
+        await tree_manager.update_node(node_id, {
+            "evaluation": {
+                "execution_result": execution_result.to_dict()
+            }
+        })
         
         # Create evaluator
         agent = SQLEvaluatorAgent(memory, llm_config={
@@ -193,8 +206,8 @@ class TestSQLEvaluatorAgent:
             "timeout": 60
         })
         
-        # Run the agent
-        result = await agent.run(f"node:{node_id} - Evaluate SQL execution results")
+        # Run the agent - SQLEvaluator uses current_node_id from tree manager
+        result = await agent.run("Evaluate SQL execution results")
         
         assert result is not None
         assert len(result.messages) > 0
@@ -225,6 +238,12 @@ class TestSQLEvaluatorAgent:
         
         tree_manager = QueryTreeManager(memory)
         await tree_manager.update_node_result(node_id, execution_result, success=True)
+        # Also store in evaluation field
+        await tree_manager.update_node(node_id, {
+            "evaluation": {
+                "execution_result": execution_result.to_dict()
+            }
+        })
         
         agent = SQLEvaluatorAgent(memory, llm_config={
             "model_name": "gpt-4o",
@@ -232,7 +251,7 @@ class TestSQLEvaluatorAgent:
             "timeout": 60
         })
         
-        result = await agent.run(f"node:{node_id} - Evaluate SQL execution results")
+        result = await agent.run("Evaluate SQL execution results")
         
         assert result is not None
         evaluation = await memory.get("execution_analysis")
@@ -256,11 +275,17 @@ class TestSQLEvaluatorAgent:
         )
         tree_manager = QueryTreeManager(memory)
         await tree_manager.update_node_result(node_id, execution_result, success=True)
+        # Also store in evaluation field
+        await tree_manager.update_node(node_id, {
+            "evaluation": {
+                "execution_result": execution_result.to_dict()
+            }
+        })
         
         agent = SQLEvaluatorAgent(memory, llm_config={"model_name": "gpt-4o"})
         
         # Test reader callback
-        context = await agent._reader_callback(memory, f"node:{node_id}", None)
+        context = await agent._reader_callback(memory, "task", None)
         
         assert context is not None
         assert "node_id" in context
@@ -302,10 +327,27 @@ class TestSQLEvaluatorAgent:
         assert result is not None
         assert result["answers_intent"] == "yes"
         assert result["result_quality"] == "good"
-        assert len(result["issues"]) == 1
-        assert result["issues"][0]["type"] == "performance"
-        assert len(result["suggestions"]) == 1
-        assert result["confidence_score"] == 0.9
+        
+        # Handle both single issue and list of issues
+        issues = result.get("issues", {})
+        if isinstance(issues, dict) and "issue" in issues:
+            # Single issue case - convert to list
+            issue_list = [issues["issue"]] if not isinstance(issues["issue"], list) else issues["issue"]
+        else:
+            issue_list = []
+        
+        assert len(issue_list) == 1
+        assert issue_list[0]["type"] == "performance"
+        
+        # Handle suggestions similarly
+        suggestions = result.get("suggestions", {})
+        if isinstance(suggestions, dict) and "suggestion" in suggestions:
+            suggestion_list = [suggestions["suggestion"]] if not isinstance(suggestions["suggestion"], list) else suggestions["suggestion"]
+        else:
+            suggestion_list = []
+            
+        assert len(suggestion_list) == 1
+        assert float(result["confidence_score"]) == 0.9
         
         print(f"\nParsed evaluation: {result}")
     
@@ -345,6 +387,12 @@ class TestSQLEvaluatorAgent:
             )
             tree_manager = QueryTreeManager(memory)
             await tree_manager.update_node_result(node_id, execution_result, success=True)
+            # Also store in evaluation field
+            await tree_manager.update_node(node_id, {
+                "evaluation": {
+                    "execution_result": execution_result.to_dict()
+                }
+            })
             
             # Create and run evaluator
             agent = SQLEvaluatorAgent(memory, llm_config={
@@ -353,7 +401,7 @@ class TestSQLEvaluatorAgent:
                 "timeout": 60
             })
             
-            result = await agent.run(f"node:{node_id} - Evaluate SQL execution results")
+            result = await agent.run("Evaluate SQL execution results")
             
             assert result is not None
             assert len(result.messages) > 0

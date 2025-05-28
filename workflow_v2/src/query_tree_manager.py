@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 
 from keyvalue_memory import KeyValueMemory
-from memory_content_types import QueryNode, QueryMapping, CombineStrategy, ExecutionResult, NodeStatus
+from memory_content_types import QueryNode, ExecutionResult, NodeStatus
 
 
 class QueryTreeManager:
@@ -40,7 +40,6 @@ class QueryTreeManager:
         root_node = QueryNode(
             nodeId=root_id,
             intent=root_intent,
-            mapping=QueryMapping(),
             evidence=evidence
         )
         
@@ -167,13 +166,35 @@ class QueryTreeManager:
             "status": status.value
         })
     
-    async def update_node_mapping(self, node_id: str, mapping: QueryMapping) -> None:
-        """Update the mapping for a node."""
-        await self.update_node(node_id, {"mapping": mapping.to_dict()})
     
-    async def update_node_combine_strategy(self, node_id: str, strategy: CombineStrategy) -> None:
-        """Update the combine strategy for a node."""
-        await self.update_node(node_id, {"combineStrategy": strategy.to_dict()})
+    async def update_node_sql_context(self, node_id: str, explanation: str, considerations: str, query_type: str = "simple") -> None:
+        """Update the SQL context information for a node."""
+        await self.update_node(node_id, {
+            "sqlExplanation": explanation,
+            "sqlConsiderations": considerations,
+            "queryType": query_type
+        })
+    
+    async def update_node_evaluation(self, node_id: str, evaluation_result: Dict[str, Any]) -> None:
+        """Update the evaluation results for a node, including issues found."""
+        # Extract key evaluation data to store in the node
+        evaluation_data = {
+            "evaluationQuality": evaluation_result.get("result_quality"),
+            "evaluationAnswersIntent": evaluation_result.get("answers_intent"),
+            "evaluationSummary": evaluation_result.get("result_summary"),
+            "evaluationIssues": evaluation_result.get("issues", []),
+            "evaluationSuggestions": evaluation_result.get("suggestions", []),
+            "evaluationConfidence": evaluation_result.get("confidence_score"),
+            "evaluationGeneratorContext": evaluation_result.get("generator_context_review")
+        }
+        # Remove None values
+        evaluation_data = {k: v for k, v in evaluation_data.items() if v is not None}
+        await self.update_node(node_id, evaluation_data)
+    
+    async def update_node_schema_context(self, node_id: str, linking_result: Dict[str, Any]) -> None:
+        """Update the schema linking context for a node - stores the complete linking result."""
+        # Store the entire linking result in schema_linking so other agents can use whatever they need
+        await self.update_node(node_id, {"schema_linking": linking_result})
     
     async def delete_node(self, node_id: str) -> None:
         """

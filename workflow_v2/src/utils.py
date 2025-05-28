@@ -5,7 +5,7 @@ import random
 import json
 import time
 import sqlite3
-from typing import Dict, List
+from typing import Dict, List, Optional, Any
 
 
 subq_pattern = r"Sub question\s*\d+\s*:"
@@ -650,3 +650,248 @@ def extract_sql_from_text(text: str) -> str:
     except Exception as e:
         print(f"Error extracting SQL: {str(e)}")
         return ""
+
+
+# XML Parsing Utilities for Agent Communication
+def extract_xml_content(text: str, tag_name: str) -> Optional[str]:
+    """
+    Extract content between XML tags from text.
+    
+    Args:
+        text: Text containing XML
+        tag_name: Name of the XML tag to extract
+        
+    Returns:
+        Content between tags or None if not found
+    """
+    import re
+    
+    # Try to find the tag in the text
+    pattern = rf'<{tag_name}>.*?</{tag_name}>'
+    match = re.search(pattern, text, re.DOTALL)
+    if match:
+        return match.group()
+    
+    # Also try to find in code blocks (with various language tags)
+    code_block_patterns = [
+        rf'```(?:xml)?\s*\n(.*?<{tag_name}>.*?</{tag_name}>.*?)\n```',
+        rf'```\w*\s*\n(.*?<{tag_name}>.*?</{tag_name}>.*?)\n```',  # Matches ```sql_generation etc
+    ]
+    
+    for code_block_pattern in code_block_patterns:
+        match = re.search(code_block_pattern, text, re.DOTALL)
+        if match:
+            xml_content = match.group(1)
+            tag_match = re.search(pattern, xml_content, re.DOTALL)
+            if tag_match:
+                return tag_match.group()
+    
+    return None
+
+
+def parse_xml_hybrid(text: str, root_tag: str) -> Optional[Dict[str, Any]]:
+    """
+    Parse XML with hybrid approach: try full parsing first, then section-by-section.
+    
+    Args:
+        text: Text containing XML
+        root_tag: Root tag name (e.g., 'schema_linking', 'evaluation')
+        
+    Returns:
+        Parsed dictionary or None if parsing fails
+    """
+    import xml.etree.ElementTree as ET
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    
+    # Extract XML content
+    xml_content = extract_xml_content(text, root_tag)
+    if not xml_content:
+        logger.error(f"No {root_tag} XML found in text")
+        return None
+    
+    # Try to parse the entire XML
+    try:
+        root = ET.fromstring(xml_content)
+        return xml_element_to_dict(root)
+    except ET.ParseError as e:
+        logger.warning(f"Full XML parsing failed: {str(e)}")
+        logger.info("Attempting section-by-section parsing...")
+        
+        # Extract sections and parse individually
+        return parse_xml_sections(xml_content, root_tag)
+
+
+def xml_element_to_dict(element: Any) -> Dict[str, Any]:
+    """
+    Convert XML Element to dictionary recursively.
+    
+    Args:
+        element: XML Element object
+        
+    Returns:
+        Dictionary representation of the XML element
+    """
+    import xml.etree.ElementTree as ET
+    
+    result = {}
+    
+    # Add attributes
+    if element.attrib:
+        result.update(element.attrib)
+    
+    # Process children
+    children = list(element)
+    if children:
+        child_dict = {}
+        for child in children:
+            child_data = xml_element_to_dict(child)
+            
+            # Handle multiple children with same tag
+            if child.tag in child_dict:
+                # Convert to list if not already
+                if not isinstance(child_dict[child.tag], list):
+                    child_dict[child.tag] = [child_dict[child.tag]]
+                child_dict[child.tag].append(child_data)
+            else:
+                child_dict[child.tag] = child_data
+        
+        # Merge child dict with result
+        for key, value in child_dict.items():
+            if key in result:
+                # Handle conflict between attribute and child element
+                result[f"_{key}"] = value
+            else:
+                result[key] = value
+    
+    # Add text content if exists
+    if element.text and element.text.strip():
+        text = element.text.strip()
+        if children or element.attrib:
+            result['_text'] = text
+        else:
+            return text
+    
+    return result if (children or element.attrib or not element.text) else ""
+
+
+def parse_xml_sections(xml_content: str, root_tag: str) -> Dict[str, Any]:
+    """
+    Parse XML by extracting and parsing individual sections.
+    
+    Args:
+        xml_content: XML content as string
+        root_tag: Root tag name
+        
+    Returns:
+        Dictionary with parsed sections
+    """
+    import re
+    import xml.etree.ElementTree as ET
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    result = {}
+    
+    # Extract content between root tags
+    root_pattern = rf'<{root_tag}[^>]*>(.*?)</{root_tag}>'
+    root_match = re.search(root_pattern, xml_content, re.DOTALL)
+    
+    if not root_match:
+        logger.error(f"Could not extract {root_tag} content")
+        return result
+    
+    inner_content = root_match.group(1)
+    
+    # Find all top-level sections
+    # Match both self-closing and regular tags
+    section_pattern = r'<(\w+)(?:\s+[^>]*)?>.*?(?:</\1>|/>)'
+    sections = re.finditer(section_pattern, inner_content, re.DOTALL)
+    
+    for section_match in sections:
+        section_xml = section_match.group()
+        tag_name = section_match.group(1)
+        
+        try:
+            # Try to parse this section
+            section_element = ET.fromstring(section_xml)
+            result[tag_name] = xml_element_to_dict(section_element)
+        except ET.ParseError:
+            logger.warning(f"Failed to parse section {tag_name}, using regex extraction")
+            # Fallback to regex extraction for this section
+            result[tag_name] = extract_section_with_regex(section_xml, tag_name)
+    
+    return result
+
+
+def extract_section_with_regex(section_xml: str, tag_name: str) -> Any:
+    """
+    Extract section content using regex when XML parsing fails.
+    
+    Args:
+        section_xml: XML section as string
+        tag_name: Tag name of the section
+        
+    Returns:
+        Extracted content
+    """
+    import re
+    
+    # Handle self-closing tags
+    if section_xml.rstrip().endswith('/>'):
+        # Extract attributes
+        attrs = {}
+        attr_pattern = r'(\w+)\s*=\s*["\']([^"\']*)["\']'
+        for match in re.finditer(attr_pattern, section_xml):
+            attrs[match.group(1)] = match.group(2)
+        return attrs
+    
+    # Extract inner content
+    content_pattern = rf'<{tag_name}[^>]*>(.*?)</{tag_name}>'
+    content_match = re.search(content_pattern, section_xml, re.DOTALL)
+    
+    if content_match:
+        inner = content_match.group(1).strip()
+        
+        # Check if it contains sub-elements
+        if '<' in inner and '>' in inner:
+            # Has sub-elements, extract them
+            sub_dict = {}
+            element_pattern = r'<(\w+)[^>]*>(.*?)</\1>'
+            for match in re.finditer(element_pattern, inner, re.DOTALL):
+                sub_tag = match.group(1)
+                sub_content = match.group(2).strip()
+                
+                if sub_tag in sub_dict:
+                    if not isinstance(sub_dict[sub_tag], list):
+                        sub_dict[sub_tag] = [sub_dict[sub_tag]]
+                    sub_dict[sub_tag].append(sub_content)
+                else:
+                    sub_dict[sub_tag] = sub_content
+            
+            return sub_dict if sub_dict else inner
+        else:
+            # Plain text content
+            return inner
+    
+    return None
+
+
+# Helper functions for common patterns
+def strip_quotes(value: str) -> str:
+    """Strip surrounding quotes from a value if present."""
+    if value and len(value) >= 2:
+        if (value.startswith("'") and value.endswith("'")) or \
+           (value.startswith('"') and value.endswith('"')):
+            return value[1:-1]
+    return value
+
+
+def ensure_list(value: Any) -> List[Any]:
+    """Ensure value is a list, converting single item to list if needed."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return [value]
+    return value

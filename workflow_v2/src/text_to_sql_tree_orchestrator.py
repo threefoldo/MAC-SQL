@@ -14,8 +14,10 @@ import os
 import sys
 import asyncio
 import logging
+import re
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
+from datetime import datetime
 from dotenv import load_dotenv
 
 # Import all required components
@@ -36,7 +38,6 @@ from task_status_checker import TaskStatusChecker
 # Memory types
 from memory_content_types import (
     TaskContext, QueryNode, NodeStatus, TaskStatus,
-    QueryMapping, TableMapping, ColumnMapping, JoinMapping,
     TableSchema, ColumnInfo, ExecutionResult
 )
 
@@ -139,75 +140,104 @@ class TextToSQLTreeOrchestrator:
         )
         
         coordinator = AssistantAgent(
-            name="coordinator",
-            system_message="""You are a smart orchestrator for a text-to-SQL workflow.
+            name="orchestrator",
+            system_message="""You are a FEEDBACK LOOP ORCHESTRATOR for text-to-SQL generation.
 
-Your job is to:
-1. Examine node status and decide which tool to call
-2. Call tools based on what each node needs
-3. Say TERMINATE when all nodes are complete
+## YOUR MISSION: BUILD FEEDBACK LOOPS TO GET GOOD SQL
 
-Available tools:
-- query_analyzer: Breaks down the user's query into a tree structure
-- schema_linker: Links the current node to database schema (ALWAYS call this before generating SQL)
-- sql_generator: Generates SQL for the current node
-- sql_evaluator: Executes and evaluates SQL for the current node
-- task_status_checker: Tells you the current node status and what needs to be done
+Your ONLY goal is to construct feedback loops that iterate until you get GOOD SQL results.
 
-IMPORTANT: 
-- Tools operate on the "current node" automatically - the system tracks which node to work on.
-- All tools require a 'task' parameter. Always call tools with task="current task description"
+**FEEDBACK LOOP PATTERN:**
+1. Check status → 2. If bad SQL, analyze error → 3. Choose agent to change context → 4. Retry → 5. Repeat until GOOD
 
-DECISION LOGIC based on node status:
-1. No tree exists → call query_analyzer with the user's query as task
-2. Node has no SQL → ALWAYS call schema_linker first with task="link schema for current node", then sql_generator
-3. Node has bad SQL (evaluation showed poor quality) → call schema_linker with task="relink schema with fixes", then sql_generator with task="regenerate SQL with fixes"
-4. Node has SQL but not evaluated → call sql_evaluator with task="evaluate SQL for current node"
-5. After any evaluation → call task_status_checker with task="check task status"
+## AVAILABLE TOOLS:
+- **task_status_checker**: Gets current tree status and node states
+- **schema_linker**: Changes schema context (table/column selection)  
+- **query_analyzer**: Changes query decomposition context
+- **sql_generator**: Generates SQL from current context
+- **sql_evaluator**: Executes SQL and provides error feedback
 
-CRITICAL: Even if query_analyzer creates some mapping, you MUST still call schema_linker before sql_generator. The mapping from query_analyzer is not sufficient for SQL generation.
+## FEEDBACK LOOP CONSTRUCTION:
 
-IMPORTANT FOR RETRIES:
-- The agents now receive complete context including execution results and evaluation analysis
-- When retrying (ACTION: RETRY NODE), the agents will see previous failures and adapt automatically
-- DO NOT keep calling the same agent repeatedly - they will generate different outputs based on context
-- Trust the agents to learn from failures and try different approaches
+### STEP 1: Always start with task_status_checker
+```
+Call task_status_checker to understand current situation
+```
 
-The task_status_checker will tell you:
-- Current node status (what it has/needs)
-- Quality of results (if evaluated)
-- ACTION directive:
-  - "ACTION: PROCESS NODE" → Node needs work (always schema_linker then sql_generator)
-  - "ACTION: RETRY NODE" → Node has poor results (schema_linker then sql_generator again)
-  - "ACTION: RECONSIDER DECOMPOSITION" → Node failed after 3 retries, query_analyzer needs to re-decompose from parent
-  - "ACTION: QUERY UNCLEAR" → Query is fundamentally unclear, needs clarification
-  - "ACTION: TASK COMPLETE" → All nodes done, say TERMINATE
-  - "ACTION: ERROR" → Something went wrong
+### STEP 2: Interpret the status report
+The status report tells you:
+- Current node and its state (no_sql, need_eval, good_sql, bad_sql)
+- Error messages if SQL failed
+- Whether nodes reached max retries
+- Completion status
 
-WORKFLOW:
-1. Start: call query_analyzer with the query
-2. Call task_status_checker to understand current state
-3. Based on the status report:
-   - If node needs SQL → ALWAYS: schema_linker first, then sql_generator
-   - If SQL needs retry → ALWAYS: schema_linker first, then sql_generator
-   - If SQL not evaluated → sql_evaluator
-   - If reconsider decomposition → call query_analyzer with task="reconsider query decomposition from parent node"
-   - If query unclear → say TERMINATE with message about unclear query
-   - After evaluation → task_status_checker
-4. Repeat until task_status_checker says "TASK COMPLETE"
+### STEP 3: Choose next agent based on FEEDBACK LOOP LOGIC
 
-RETRY STRATEGY:
-- Each node gets up to 3 retries (automatic via context awareness)
-- After 3 failed attempts, task_status_checker will recommend reconsidering decomposition
-- When reconsidering, the system moves to parent node for re-analysis
-- This prevents infinite loops on fundamentally flawed decompositions
+**If status shows "No query tree found":**
+- No schema analysis? → Call schema_linker with task=""
+- Has schema? → Call query_analyzer with task=""
 
-Remember: 
-- ALWAYS call schema_linker before sql_generator (even on retries)
-- Nodes can be retried if results are poor (max 3 times)
-- After 3 retries, the decomposition itself may need adjustment
-- SQL can be regenerated if evaluation shows issues
-- Always check status after evaluation to determine next steps""",
+**If current node "State: no_sql":**
+- Call sql_generator with task="node_[NODE_ID]"
+
+**If current node "State: need_eval":**
+- Call sql_evaluator with task="node_[NODE_ID]"
+
+**If current node "State: bad_sql":**
+- FEEDBACK LOOP CRITICAL POINT: Analyze error to change context
+- Schema errors (table/column not found) → Call schema_linker with task="node_[NODE_ID]"
+- Logic errors (syntax/joins) → Call query_analyzer with task="node_[NODE_ID]"
+- Unknown errors → Try schema_linker first (most common issue)
+
+**If current node "State: good_sql":**
+- TaskStatusChecker automatically moves to next node
+- Call task_status_checker again to see new current node
+
+**If status shows "All nodes processed successfully":**
+- Say TERMINATE - you achieved the goal!
+
+**If status shows "reached max retries":**
+- Node failed too many times, TaskStatusChecker moved to next
+- Continue the feedback loop with new current node
+
+### STEP 4: After calling any agent, ALWAYS return to task_status_checker
+This completes the feedback loop cycle.
+
+## TERMINATION CONDITIONS:
+
+✅ **SUCCESS TERMINATION:** Say TERMINATE when status shows "All nodes processed successfully"
+❌ **LIMIT TERMINATION:** Say TERMINATE when:
+- You've made 50+ agent calls (step limit reached)
+- 5+ minutes have passed (time limit)
+- All nodes have reached max retries (no more progress possible)
+
+## CRITICAL FEEDBACK LOOP RULES:
+
+1. **ALWAYS start each cycle with task_status_checker**
+2. **NEVER repeat the same failed approach** - if schema_linker fails, try query_analyzer next
+3. **Error messages guide context changes:**
+   - Table/column errors → Change schema context (schema_linker)
+   - Logic/syntax errors → Change decomposition context (query_analyzer)
+4. **Each failure provides information** - agents see full context and adapt
+5. **Context changes break failure patterns** - different context → different SQL
+6. **Trust the process** - keep iterating until good SQL or limits reached
+
+## EXAMPLE FEEDBACK LOOP CYCLES:
+
+**Cycle 1:** task_status_checker → schema_linker → task_status_checker → query_analyzer
+**Cycle 2:** task_status_checker → sql_generator → task_status_checker → sql_evaluator  
+**Cycle 3:** task_status_checker → schema_linker (error context change) → task_status_checker → sql_generator
+**Cycle 4:** task_status_checker → sql_evaluator → task_status_checker → TERMINATE (good result!)
+
+## AGENT TASK PARAMETERS:
+- **Empty task ""**: For initial schema analysis or query analysis
+- **"node_[ID]"**: For node-specific operations (sql_generator, sql_evaluator, retries)
+
+## REMEMBER: 
+- Your job is to BUILD FEEDBACK LOOPS, not to solve SQL directly
+- Each error is information to choose the next context-changing agent
+- Keep iterating until GOOD SQL or limits reached
+- The goal is a working SQL query that answers the user's question""",
             model_client=coordinator_client,
             tools=[self.query_analyzer.get_tool(), self.schema_linker.get_tool(), 
                    self.sql_generator.get_tool(), self.sql_evaluator.get_tool(),
@@ -222,7 +252,12 @@ Remember:
                            task_id: Optional[str] = None,
                            evidence: Optional[str] = None) -> Dict[str, Any]:
         """
-        Process a text-to-SQL query through the complete tree structure.
+        Process a text-to-SQL query with fixed initial sequence then flexible feedback-driven orchestration.
+        
+        WORKFLOW:
+        1. SchemaLinker: Enrich user query with evidence and find relevant schema (ALWAYS FIRST)
+        2. QueryAnalyzer: Create query tree based on schema-enriched understanding (ALWAYS SECOND)  
+        3. Flexible orchestration: Use feedback loops to guide subsequent agent decisions
         
         Args:
             query: The natural language query
@@ -242,16 +277,30 @@ Remember:
         await self.task_manager.initialize(task_id, query, db_name, evidence)
         await self.initialize_database(db_name)
         
-        self.logger.info(f"Processing query: {query}")
+        # Initialize schema_linking for coordination
+        await self._initialize_schema_linking(query, db_name, evidence)
+        
+        # Initialize query tree with root node
+        root_id = await self.tree_manager.initialize(query, evidence)
+        await self.tree_manager.set_current_node_id(root_id)
+        self.logger.info(f"Initialized query tree with root node: {root_id}")
+        
+        self.logger.info(f"Processing query with fixed initial sequence: {query}")
         self.logger.info(f"Database: {db_name}")
         self.logger.info(f"Task ID: {task_id}")
         if evidence:
             self.logger.info(f"Evidence: {evidence}")
         
-        return await self._process_with_coordinator(query)
+        # Use orchestrator agent to build feedback loops
+        return await self._process_with_orchestrator_agent()
     
-    async def _process_with_coordinator(self, query: str) -> Dict[str, Any]:
-        """Process query using the coordinator agent with max steps control."""
+    async def _process_with_orchestrator_agent(self) -> Dict[str, Any]:
+        """
+        Process query using orchestrator agent that builds feedback loops.
+        
+        The orchestrator agent makes decisions about which agents to call
+        and constructs feedback loops to achieve good SQL results.
+        """
         if not self.coordinator:
             self.coordinator = self._create_coordinator()
         
@@ -262,57 +311,67 @@ Remember:
             termination_condition=termination_condition
         )
         
-        # Run the tree processing with step control
-        self.logger.info("Starting coordinator-based tree processing")
-        stream = team.run_stream(task=query)
+        # Initial instruction to start feedback loop construction
+        start_instruction = """Begin building feedback loops to generate good SQL for the user's query.
+
+Start by calling task_status_checker to understand the current situation, then construct feedback loops to iteratively improve until you get good SQL results.
+
+Remember:
+- Always start each cycle with task_status_checker
+- Analyze errors to choose which agent changes context
+- Keep iterating until good SQL or limits reached
+- The task_status_checker will signal completion when ready"""
+
+        # Run the orchestrator with step and time control
+        self.logger.info("Starting orchestrator agent feedback loop construction")
+        stream = team.run_stream(task=start_instruction)
         
         # Process messages with loop control
         step_count = 0
-        max_steps = self.max_steps  # Use configurable safety limit
+        max_steps = 50  # Step limit
+        start_time = asyncio.get_event_loop().time()
+        time_limit = 300  # 5 minutes time limit
         messages = []
-        last_message_content = None  # Track duplicate messages
-        duplicate_count = 0
         
         async for message in stream:
             messages.append(message)
+            current_time = asyncio.get_event_loop().time()
             
-            # Check for duplicate messages
-            current_content = str(message.content) if hasattr(message, 'content') else None
-            if current_content and current_content == last_message_content:
-                duplicate_count += 1
-                if duplicate_count >= 3:  # Stop after 3 identical messages
-                    self.logger.warning("Detected repeated messages. Stopping to prevent infinite loop.")
-                    break
-            else:
-                duplicate_count = 0
-                last_message_content = current_content
-            
-            # Process coordinator messages
-            if hasattr(message, 'source') and message.source == 'coordinator':
+            # Process orchestrator messages
+            if hasattr(message, 'source') and message.source == 'orchestrator':
                 step_count += 1
                 
-                # Check max steps
+                # Check step limit
                 if step_count >= max_steps:
-                    self.logger.warning(f"Reached maximum steps ({max_steps}). Stopping to prevent infinite loop.")
+                    self.logger.warning(f"Reached step limit ({max_steps}). Terminating orchestrator.")
+                    break
+                
+                # Check time limit
+                if current_time - start_time >= time_limit:
+                    self.logger.warning(f"Reached time limit ({time_limit}s). Terminating orchestrator.")
                     break
                 
                 if hasattr(message, 'content'):
-                    if isinstance(message.content, str):
-                        self.logger.debug(f"Coordinator step {step_count}: {message.content[:100]}...")
-                        
-                        # Check for termination
-                        if "TERMINATE" in message.content:
-                            self.logger.info(f"Workflow completed successfully after {step_count} steps")
-                            break
+                    content = str(message.content) if message.content else ""
+                    self.logger.debug(f"Orchestrator step {step_count}: {content[:100]}...")
+                    
+                    # Check for termination
+                    if "TERMINATE" in content:
+                        self.logger.info(f"Orchestrator completed successfully after {step_count} steps")
+                        break
         
         # Log completion status
+        total_time = asyncio.get_event_loop().time() - start_time
         if step_count >= max_steps:
-            self.logger.error(f"Workflow stopped after reaching max steps limit ({max_steps})")
-        elif duplicate_count >= 3:
-            self.logger.error("Workflow stopped due to repeated messages (possible infinite loop)")
+            self.logger.error(f"Orchestrator stopped due to step limit ({max_steps} steps)")
+        elif total_time >= time_limit:
+            self.logger.error(f"Orchestrator stopped due to time limit ({time_limit}s)")
+        else:
+            self.logger.info(f"Orchestrator completed in {step_count} steps, {total_time:.1f}s")
         
         # Get final results
         return await self._get_tree_results()
+    
     
     async def _get_tree_results(self) -> Dict[str, Any]:
         """Extract and format the tree processing results."""
@@ -332,12 +391,19 @@ Remember:
         
         # Process each node
         for node_id, node_data in tree["nodes"].items():
+            # Extract SQL from generation field
+            sql = None
+            if node_data.get("generation") and isinstance(node_data["generation"], dict):
+                sql = node_data["generation"].get("sql")
+            elif node_data.get("sql"):  # Fallback to old field
+                sql = node_data.get("sql")
+            
             node_result = {
                 "node_id": node_id,
                 "intent": node_data.get("intent"),
                 "status": node_data.get("status"),
-                "mapping": node_data.get("mapping"),
-                "sql": node_data.get("sql"),
+                "mapping": node_data.get("schema_linking", node_data.get("mapping")),  # Handle both fields
+                "sql": sql,
                 "execution_result": node_data.get("executionResult"),
                 "analysis": None
             }
@@ -352,7 +418,12 @@ Remember:
         
         # Final result is simply the root node's SQL (regardless of quality)
         if root_id and root_id in tree["nodes"]:
-            root_sql = tree["nodes"][root_id].get("sql")
+            root_node = tree["nodes"][root_id]
+            # Extract SQL from generation field
+            if root_node.get("generation") and isinstance(root_node["generation"], dict):
+                root_sql = root_node["generation"].get("sql")
+            else:
+                root_sql = root_node.get("sql")  # Fallback to old field
             results["final_result"] = root_sql
         
         return results
@@ -376,19 +447,33 @@ Remember:
             print(f"  Intent: {node_data.get('intent', 'N/A')}")
             print(f"  Status: {node_data.get('status', 'N/A')}")
             
-            # Show mapping if available
-            if 'mapping' in node_data and node_data['mapping']:
-                mapping = node_data['mapping']
-                if mapping.get('tables'):
+            # Show mapping if available (check both new and old field names)
+            mapping = node_data.get('schema_linking', node_data.get('mapping'))
+            if mapping:
+                # Handle new structure
+                if 'selected_tables' in mapping:
+                    tables_data = mapping.get('selected_tables', {})
+                    if isinstance(tables_data, dict) and 'table' in tables_data:
+                        table_info = tables_data['table']
+                        if isinstance(table_info, dict):
+                            print(f"  Tables: {table_info.get('name', 'unknown')}")
+                        elif isinstance(table_info, list):
+                            table_names = [t.get('name', 'unknown') for t in table_info if isinstance(t, dict)]
+                            print(f"  Tables: {', '.join(table_names)}")
+                # Handle old structure
+                elif mapping.get('tables'):
                     tables = [t['name'] for t in mapping['tables']]
                     print(f"  Tables: {', '.join(tables)}")
-                if mapping.get('columns'):
-                    cols = [f"{c['table']}.{c['column']}" for c in mapping['columns']]
-                    print(f"  Columns: {', '.join(cols[:3])}..." if len(cols) > 3 else f"  Columns: {', '.join(cols)}")
             
-            # Show SQL if available
-            if 'sql' in node_data and node_data['sql']:
-                sql_preview = node_data['sql'].strip().replace('\n', ' ')[:100]
+            # Show SQL if available (from generation field)
+            sql = None
+            if node_data.get('generation') and isinstance(node_data['generation'], dict):
+                sql = node_data['generation'].get('sql')
+            elif node_data.get('sql'):  # Fallback to old field
+                sql = node_data.get('sql')
+            
+            if sql:
+                sql_preview = str(sql).strip().replace('\n', ' ')[:100]
                 print(f"  SQL: {sql_preview}..." if len(sql_preview) == 100 else f"  SQL: {sql_preview}")
             
             # Show execution result if available
@@ -448,6 +533,31 @@ Remember:
                     print(f"  Result quality: {analysis.get('result_quality', 'N/A').upper()}")
         else:
             print("\nNo final SQL available. Root node has not generated SQL yet.")
+    
+    async def _initialize_schema_linking(self, query: str, db_name: str, evidence: str = None) -> None:
+        """
+        Initialize the schema_linking for schema linking coordination.
+        Query decomposition and SQL storage handled by query_tree.
+        """
+        try:
+            # Create the shared context for schema linking
+            schema_context = {
+                "original_query": query,
+                "database_name": db_name,
+                "evidence": evidence,
+                "initialized_at": datetime.now().isoformat(),
+                "schema_analysis": None,  # Updated by SchemaLinker
+                "last_update": None
+            }
+            
+            # Store in memory for SchemaLinker to access
+            await self.memory.set("schema_linking", schema_context)
+            
+            self.logger.debug("✓ Schema linking context initialized")
+            
+        except Exception as e:
+            self.logger.error(f"Error initializing schema_linking: {str(e)}", exc_info=True)
+            raise
 
 
 # Convenience function for quick tree orchestration execution
@@ -499,6 +609,11 @@ async def run_text_to_sql(query: str,
     if display_results:
         await orchestrator.display_query_tree()
         await orchestrator.display_final_results()
+    
+    # Add compatibility fields for easier access
+    if results:
+        results["sql"] = results.get("final_result")
+        results["success"] = bool(results.get("final_result") and results.get("tree_complete", False))
     
     return results
 

@@ -8,7 +8,6 @@ a query tree structure.
 
 import logging
 import re
-import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 
@@ -19,10 +18,10 @@ from database_schema_manager import DatabaseSchemaManager
 from query_tree_manager import QueryTreeManager
 from node_history_manager import NodeHistoryManager
 from memory_content_types import (
-    QueryNode, QueryMapping, TableMapping, ColumnMapping,
-    CombineStrategy, CombineStrategyType, NodeStatus
+    QueryNode, NodeStatus
 )
 from prompts import SUBQ_PATTERN, SQL_CONSTRAINTS
+from utils import parse_xml_hybrid
 
 
 class QueryAnalyzerAgent(BaseMemoryAgent):
@@ -54,6 +53,16 @@ class QueryAnalyzerAgent(BaseMemoryAgent):
 3. Determine query complexity
 4. For complex queries, decompose them into simpler sub-queries
 
+## Schema-Informed Analysis
+
+If schema analysis is provided (from SchemaLinker), use it to inform your decisions:
+- **Table Selection**: Prefer tables already identified as relevant by schema analysis
+- **Column Awareness**: Consider which columns were identified as important
+- **Relationship Understanding**: Use identified foreign key relationships for decomposition
+- **Confidence Boost**: Schema analysis increases confidence in table/column choices
+
+If no schema analysis is available, perform standard analysis based on query text and evidence.
+
 ## Complexity Determination
 
 **Simple Queries** (direct SQL generation):
@@ -75,10 +84,11 @@ class QueryAnalyzerAgent(BaseMemoryAgent):
 ## Table Identification Strategy
 
 When analyzing which tables are needed:
-1. Look for entity mentions in the query (e.g., "students" → student table)
-2. Use evidence to understand domain-specific terminology and mappings
-3. Consider foreign key relationships for joins
-4. Include tables needed for filtering even if not in SELECT
+1. **First priority**: Use schema analysis results if available
+2. Look for entity mentions in the query (e.g., "students" → student table)
+3. Use evidence to understand domain-specific terminology and mappings
+4. Consider foreign key relationships for joins
+5. Include tables needed for filtering even if not in SELECT
 
 ## Decomposition Guidelines
 
@@ -87,6 +97,7 @@ When decomposing complex queries:
 2. **Ensure independence**: Sub-queries should be executable on their own
 3. **Plan the combination**: Think about how results connect
 4. **Order matters**: Earlier sub-queries may provide values for later ones
+5. **Use schema insights**: If schema analysis identified key relationships, use them for decomposition
 
 ### Combination Strategies:
 - **join**: When sub-queries share common columns to join on
@@ -144,10 +155,7 @@ Analysis: Simple - single table with filter
 Query: "List schools with test scores above the district average"
 Analysis: Complex - requires calculating average first, then comparing each school
 
-IMPORTANT: After your analysis, always end with:
-<node_info>
-The query tree has been created. The root node ID will be logged and should be used for subsequent agent calls.
-</node_info>"""
+IMPORTANT: Your analysis will be stored in the query tree node and used by SQLGenerator to create appropriate SQL queries."""
     
     async def _reader_callback(self, memory: KeyValueMemory, task: str, cancellation_token) -> Dict[str, Any]:
         """Read context from memory before analyzing the query"""
@@ -172,6 +180,14 @@ The query tree has been created. The root node ID will be logged and should be u
         schema_xml = await self._get_schema_xml()
         context["schema"] = schema_xml
         
+        # Get schema analysis context if available for schema-informed decomposition
+        schema_linking = await memory.get("schema_linking")
+        if schema_linking and schema_linking.get("schema_analysis"):
+            context["schema_analysis"] = schema_linking["schema_analysis"]
+            self.logger.debug("Found existing schema analysis - will use for schema-informed decomposition")
+        else:
+            self.logger.debug("No schema analysis found - decomposition will be schema-agnostic")
+        
         self.logger.info(f"Query analyzer context prepared with schema length: {len(schema_xml)}")
         self.logger.info(f"query: {context['query']} database: {context.get('database_id', 'N/A')}")
         if "evidence" in context:
@@ -186,69 +202,68 @@ The query tree has been created. The root node ID will be logged and should be u
             return
             
         last_message = result.messages[-1].content
+        # Log the raw output for debugging
+        self.logger.info(f"Raw LLM output: {last_message}")
         
         try:
             # Parse the XML output
             analysis = self._parse_analysis_xml(last_message)
             
             if analysis:
-                # Get evidence from task context
-                task_context = await self.task_manager.get()
-                evidence = task_context.evidence if task_context else None
+                # Get current node (root node created by orchestrator)
+                current_node_id = await self.tree_manager.get_current_node_id()
+                if not current_node_id:
+                    self.logger.error("No current node found - orchestrator should have initialized the tree")
+                    return
                 
-                # Create the root node with the analyzed intent and evidence
-                root_id = await self.tree_manager.initialize(analysis["intent"], evidence)
+                # Store the entire analysis result in the QueryTree node
+                await self.tree_manager.update_node(current_node_id, {"queryAnalysis": analysis})
                 
-                # Record the creation in history
+                # Update the root node with the analyzed intent
+                await self.tree_manager.update_node(current_node_id, {"intent": analysis.get("intent", "")})
+                
+                # Record the analysis in history
                 await self.history_manager.record_create(
-                    node_id=root_id,
-                    intent=analysis["intent"]
+                    node_id=current_node_id,
+                    intent=analysis.get("intent", "")
                 )
                 
                 # If complex query, create sub-query nodes
                 if analysis.get("complexity") == "complex" and "decomposition" in analysis:
-                    await self._create_subquery_nodes(root_id, analysis["decomposition"])
+                    await self._create_subquery_nodes(current_node_id, analysis["decomposition"])
+                    
+                    # For complex queries, set current node to first child
+                    children = await self.tree_manager.get_children(current_node_id)
+                    if children and len(children) > 0:
+                        first_child_id = children[0].nodeId
+                        await self.tree_manager.set_current_node_id(first_child_id)
+                        self.logger.debug(f"Complex query - set first child {first_child_id} as current node")
                 
-                # Store the analysis result with node ID
-                analysis["root_node_id"] = root_id
+                # Store the analysis result in memory as well (for backwards compatibility)
+                analysis["root_node_id"] = current_node_id
                 await memory.set("query_analysis", analysis)
-                
-                # Set current node based on complexity
-                if analysis.get("complexity") == "simple":
-                    # Simple query: current node is the root
-                    await self.tree_manager.set_current_node_id(root_id)
-                    self.logger.debug(f"Simple query - set root {root_id} as current node")
-                else:
-                    # Complex query: current node is the first child
-                    tree = await self.tree_manager.get_tree()
-                    if tree and "nodes" in tree and root_id in tree["nodes"]:
-                        root_data = tree["nodes"][root_id]
-                        # Get children IDs after they've been created
-                        children = await self.tree_manager.get_children(root_id)
-                        if children and len(children) > 0:
-                            first_child_id = children[0].nodeId
-                            await self.tree_manager.set_current_node_id(first_child_id)
-                            self.logger.debug(f"Complex query - set first child {first_child_id} as current node")
-                        else:
-                            # Fallback to root if no children
-                            await self.tree_manager.set_current_node_id(root_id)
-                            self.logger.debug(f"Complex query but no children found - set root as current")
                 
                 # User-friendly logging
                 self.logger.info("="*60)
                 self.logger.info("Query Analysis")
                 self.logger.info(f"Query: {task}")
-                self.logger.info(f"Intent: {analysis.get('intent')}")
-                self.logger.info(f"Complexity: {analysis.get('complexity').upper()}")
+                self.logger.info(f"Intent: {analysis.get('intent', 'N/A')}")
+                complexity = analysis.get('complexity', 'unknown')
+                self.logger.info(f"Complexity: {complexity.upper()}")
                 
-                if analysis.get('complexity') == 'complex' and 'decomposition' in analysis:
-                    self.logger.info(f"Decomposed into {len(analysis['decomposition'].get('subqueries', []))} sub-queries:")
-                    for sq in analysis['decomposition'].get('subqueries', []):
-                        self.logger.info(f"  - {sq['intent']}")
-                    self.logger.info(f"Combination strategy: {analysis['decomposition'].get('combination', {}).get('strategy', 'N/A').upper()}")
+                if complexity == 'complex' and 'decomposition' in analysis:
+                    # Handle both 'subqueries' and 'subquery' keys from XML parsing
+                    subqueries = analysis['decomposition'].get('subqueries', analysis['decomposition'].get('subquery', []))
+                    self.logger.info(f"Decomposed into {len(subqueries)} sub-queries:")
+                    for sq in subqueries:
+                        intent = sq.get('intent', 'N/A') if isinstance(sq, dict) else 'N/A'
+                        self.logger.info(f"  - {intent}")
+                    combination = analysis['decomposition'].get('combination', {})
+                    strategy = combination.get('strategy', 'N/A') if isinstance(combination, dict) else 'N/A'
+                    self.logger.info(f"Combination strategy: {strategy.upper()}")
                 
                 self.logger.info("="*60)
-                self.logger.debug(f"Root node ID: {root_id}")
+                self.logger.debug(f"Root node ID: {current_node_id}")
                 
         except Exception as e:
             self.logger.error(f"Error parsing analysis results: {str(e)}", exc_info=True)
@@ -288,100 +303,45 @@ The query tree has been created. The root node ID will be logged and should be u
         return '\n'.join(xml_parts)
     
     def _parse_analysis_xml(self, output: str) -> Optional[Dict[str, Any]]:
-        """Parse the analysis XML output"""
-        try:
-            # Extract XML from output
-            xml_match = re.search(r'<analysis>.*?</analysis>', output, re.DOTALL)
-            if not xml_match:
-                # Try to find XML in code blocks
-                xml_match = re.search(r'```xml\s*\n(.*?)\n```', output, re.DOTALL)
-                if xml_match:
-                    xml_content = xml_match.group(1)
-                else:
-                    self.logger.error("No analysis XML found in output")
-                    return None
-            else:
-                xml_content = xml_match.group()
-            
-            # Parse XML
-            root = ET.fromstring(xml_content)
-            
-            analysis = {
-                "intent": root.findtext("intent", "").strip(),
-                "complexity": root.findtext("complexity", "simple").strip(),
-                "tables": []
-            }
-            
-            # Parse tables
-            tables_elem = root.find("tables")
-            if tables_elem is not None:
-                for table_elem in tables_elem.findall("table"):
-                    analysis["tables"].append({
-                        "name": table_elem.get("name"),
-                        "purpose": table_elem.get("purpose", "")
+        """Parse the analysis XML output using hybrid approach"""
+        # Use the hybrid parsing utility
+        analysis = parse_xml_hybrid(output, 'analysis')
+        
+        # Handle fallback parsing for subqueries if needed
+        if analysis and not analysis.get("decomposition", {}).get("subqueries") and SUBQ_PATTERN:
+            # Look for "Sub question N:" pattern in the output as fallback
+            matches = re.finditer(SUBQ_PATTERN, output)
+            subqueries = []
+            for i, match in enumerate(matches, 1):
+                # Extract text after the match until next sub question or end
+                start = match.end()
+                next_match = re.search(SUBQ_PATTERN, output[start:])
+                end = start + next_match.start() if next_match else len(output)
+                
+                sub_text = output[start:end].strip()
+                if sub_text:
+                    # Try to extract intent from the sub-question text
+                    intent_match = re.search(r'^([^.!?]+[.!?])', sub_text)
+                    intent = intent_match.group(1) if intent_match else sub_text[:100]
+                    
+                    subqueries.append({
+                        "id": str(i),
+                        "intent": intent.strip(),
+                        "description": sub_text[:200],
+                        "tables": []  # Will be determined by schema linker
                     })
             
-            # Parse decomposition if exists
-            decomp_elem = root.find("decomposition")
-            if decomp_elem is not None:
-                decomposition = {
-                    "subqueries": [],
-                    "combination": {}
-                }
-                
-                # Parse subqueries
-                for sq_elem in decomp_elem.findall("subquery"):
-                    subquery = {
-                        "id": sq_elem.get("id"),
-                        "intent": sq_elem.findtext("intent", "").strip(),
-                        "description": sq_elem.findtext("description", "").strip(),
-                        "tables": sq_elem.findtext("tables", "").strip().split(", ")
-                    }
-                    decomposition["subqueries"].append(subquery)
-                
-                # If no subqueries found, try to parse from text using the pattern
-                if not decomposition["subqueries"] and SUBQ_PATTERN:
-                    # Look for "Sub question N:" pattern in the output
-                    matches = re.finditer(SUBQ_PATTERN, output)
-                    for i, match in enumerate(matches, 1):
-                        # Extract text after the match until next sub question or end
-                        start = match.end()
-                        next_match = re.search(SUBQ_PATTERN, output[start:])
-                        end = start + next_match.start() if next_match else len(output)
-                        
-                        sub_text = output[start:end].strip()
-                        if sub_text:
-                            # Try to extract intent from the sub-question text
-                            intent_match = re.search(r'^([^.!?]+[.!?])', sub_text)
-                            intent = intent_match.group(1) if intent_match else sub_text[:100]
-                            
-                            decomposition["subqueries"].append({
-                                "id": str(i),
-                                "intent": intent.strip(),
-                                "description": sub_text[:200],
-                                "tables": []  # Will be determined by schema linker
-                            })
-                
-                # Parse combination strategy
-                comb_elem = decomp_elem.find("combination")
-                if comb_elem is not None:
-                    decomposition["combination"] = {
-                        "strategy": comb_elem.findtext("strategy", "").strip(),
-                        "description": comb_elem.findtext("description", "").strip()
-                    }
-                
-                analysis["decomposition"] = decomposition
-            
-            return analysis
-            
-        except Exception as e:
-            self.logger.error(f"Error parsing analysis XML: {str(e)}", exc_info=True)
-            return None
+            if subqueries:
+                if "decomposition" not in analysis:
+                    analysis["decomposition"] = {}
+                analysis["decomposition"]["subqueries"] = subqueries
+        
+        return analysis
     
     async def _create_subquery_nodes(self, parent_id: str, decomposition: Dict[str, Any]) -> None:
         """Create sub-query nodes in the tree"""
-        subqueries = decomposition.get("subqueries", [])
-        combination = decomposition.get("combination", {})
+        # Handle both 'subqueries' and 'subquery' keys from XML parsing
+        subqueries = decomposition.get("subqueries", decomposition.get("subquery", []))
         
         # Create nodes for each subquery
         created_nodes = []
@@ -389,61 +349,29 @@ The query tree has been created. The root node ID will be logged and should be u
             # Generate node ID
             node_id = f"node_{datetime.now().timestamp()}_{sq['id']}"
             
-            # Create mapping (basic for now, can be enhanced)
-            mapping = QueryMapping()
-            for table_name in sq.get("tables", []):
-                if table_name.strip():
-                    mapping.tables.append(TableMapping(
-                        name=table_name.strip(),
-                        purpose=f"Used in subquery {sq['id']}"
-                    ))
-            
-            # Create the node
+            # Create the node with just the basic info
+            # Other agent outputs will be populated later by respective agents
             node = QueryNode(
                 nodeId=node_id,
                 intent=sq["intent"],
-                mapping=mapping,
                 parentId=parent_id
             )
             
             # Add to tree
             await self.tree_manager.add_node(node, parent_id)
             
+            # Store the subquery info directly in the node
+            await self.tree_manager.update_node(node_id, {"subqueryInfo": sq})
+            
             # Record in history
             await self.history_manager.record_create(
                 node_id=node_id,
-                intent=sq["intent"],
-                mapping=mapping
+                intent=sq["intent"]
             )
             
             created_nodes.append(node_id)
             self.logger.debug(f"Created subquery node: {node_id}")
         
-        # Update parent node with combination strategy
-        if combination and created_nodes:
-            strategy_type = self._parse_strategy_type(combination.get("strategy", "custom"))
-            combine_strategy = CombineStrategy(
-                type=strategy_type
-            )
-            
-            # Add strategy-specific details
-            if strategy_type == CombineStrategyType.JOIN:
-                combine_strategy.joinType = "INNER"  # Default, can be enhanced
-            elif strategy_type == CombineStrategyType.UNION:
-                combine_strategy.unionType = "UNION ALL"  # Default
-            
-            await self.tree_manager.update_node_combine_strategy(parent_id, combine_strategy)
-    
-    def _parse_strategy_type(self, strategy: str) -> CombineStrategyType:
-        """Parse strategy string to enum"""
-        strategy_map = {
-            "union": CombineStrategyType.UNION,
-            "join": CombineStrategyType.JOIN,
-            "aggregate": CombineStrategyType.AGGREGATE,
-            "filter": CombineStrategyType.FILTER,
-            "custom": CombineStrategyType.CUSTOM
-        }
-        return strategy_map.get(strategy.lower(), CombineStrategyType.CUSTOM)
     
     async def get_analysis_summary(self) -> Dict[str, Any]:
         """Get a summary of the current analysis"""

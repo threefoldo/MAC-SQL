@@ -8,7 +8,6 @@ the results and provides insights.
 
 import logging
 import re
-import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
@@ -20,6 +19,7 @@ from sql_executor import SQLExecutor
 from memory_content_types import (
     QueryNode, NodeStatus, ExecutionResult
 )
+from utils import parse_xml_hybrid
 
 
 class SQLEvaluatorAgent(BaseMemoryAgent):
@@ -53,6 +53,9 @@ You'll receive:
 - **sql**: The SQL query that was executed
 - **execution_result**: Results including data, row count, columns, and any errors
 - **node_id**: The node being evaluated
+- **sql_explanation**: How the SQL generator explained the query logic (if available)
+- **sql_considerations**: What considerations and changes the SQL generator made (if available)
+- **query_type**: The type of query generated (simple, join, aggregate, etc.)
 
 ### Step 2: Check Execution Status
 **If execution_result.status = "error":**
@@ -108,12 +111,26 @@ If evidence is provided, use it to:
 - Check domain-specific constraints
 - Verify terminology mappings are applied correctly
 
+### Step 7: Consider SQL Generator Context
+If sql_explanation and sql_considerations are provided:
+- **Review the generator's reasoning**: Understand what logic the SQL generator applied and why
+- **Check if corrections were made**: Look for mentions of fixes, retries, or adjustments in sql_considerations
+- **Validate the approach**: Ensure the generator's explanation aligns with the actual results
+- **Use for error diagnosis**: If results are poor, consider whether the generator's assumptions were correct
+- **Preserve valuable insights**: Include generator's reasoning in your analysis, especially for complex queries
+
 ## Output Format
 
 <evaluation>
   <answers_intent>yes|no|partially</answers_intent>
   <result_quality>excellent|good|acceptable|poor</result_quality>
   <result_summary>Brief description of what the results show and why</result_summary>
+  <generator_context_review>
+    <!-- Include this section if sql_explanation or sql_considerations were provided -->
+    <generator_reasoning>Summary of the SQL generator's explanation and approach</generator_reasoning>
+    <reasoning_validity>valid|invalid|partially_valid</reasoning_validity>
+    <context_notes>How the generator's context helped or should be considered for next steps</context_notes>
+  </generator_context_review>
   <issues>
     <issue>
       <type>data_quality|performance|logic|completeness|accuracy|other</type>
@@ -154,14 +171,30 @@ Focus on objective analysis - does the SQL result actually answer what was asked
             
         context["node_id"] = node_id
         context["intent"] = node.intent
-        context["sql"] = node.sql
+        # Get SQL from generation field
+        sql = node.generation.get("sql") if node.generation else None
+        context["sql"] = sql
         
-        # Get execution result if available
-        if node.executionResult:
-            context["execution_result"] = self._format_execution_result(node.executionResult)
+        # Get SQL context information from the node (explanation and considerations from SQL generator)
+        node_dict = node.to_dict()
+        sql_explanation = node_dict.get("sqlExplanation")
+        sql_considerations = node_dict.get("sqlConsiderations")
+        query_type = node_dict.get("queryType")
+        
+        if sql_explanation:
+            context["sql_explanation"] = sql_explanation
+        if sql_considerations:
+            context["sql_considerations"] = sql_considerations
+        if query_type:
+            context["query_type"] = query_type
+        
+        # Get execution result if available from evaluation field
+        if node.evaluation and "execution_result" in node.evaluation:
+            context["execution_result"] = self._format_execution_result(node.evaluation["execution_result"])
         else:
             # Execute SQL if we have it
-            if node.sql:
+            sql = node.generation.get("sql") if node.generation else None
+            if sql:
                 # Get task context to get database name
                 task_context = await memory.get("taskContext")
                 if not task_context:
@@ -194,7 +227,7 @@ Focus on objective analysis - does the SQL result actually answer what was asked
                 executor = SQLExecutor(data_path, dataset_name)
                 
                 try:
-                    result_dict = executor.execute_sql(node.sql, db_name)
+                    result_dict = executor.execute_sql(sql, db_name)
                     
                     if result_dict.get("error"):
                         execution_result = {
@@ -224,6 +257,13 @@ Focus on objective analysis - does the SQL result actually answer what was asked
                     success = execution_result["status"] == "success"
                     await self.tree_manager.update_node_result(node_id, exec_result_obj, success)
                     
+                    # Also store in evaluation field
+                    await self.tree_manager.update_node(node_id, {
+                        "evaluation": {
+                            "execution_result": execution_result
+                        }
+                    })
+                    
                 except Exception as e:
                     self.logger.error(f"Error executing SQL: {str(e)}", exc_info=True)
                     execution_result = {
@@ -246,7 +286,8 @@ Focus on objective analysis - does the SQL result actually answer what was asked
             return
             
         last_message = result.messages[-1].content
-        self.logger.info(f"Raw LLM output (first 500 chars): {last_message[:500]}")
+        # Log the raw output for debugging
+        self.logger.info(f"Raw LLM output: {last_message}")
         
         try:
             # Extract XML from response
@@ -269,6 +310,13 @@ Focus on objective analysis - does the SQL result actually answer what was asked
                 if node_id:
                     # Store analysis for the node
                     await memory.set(f"node_{node_id}_analysis", evaluation_result)
+                    
+                    # Store the entire evaluation result in the QueryTree node
+                    await self.tree_manager.update_node(node_id, {"sqlEvaluation": evaluation_result})
+                    
+                    # Also store evaluation results using the dedicated method (for backwards compatibility)
+                    await self.tree_manager.update_node_evaluation(node_id, evaluation_result)
+                    self.logger.info(f"Stored complete evaluation result in query tree node {node_id}")
                     
                     # Note: Node status is already updated when execution result is stored
                     # The status (EXECUTED_SUCCESS or EXECUTED_FAILED) is set based on whether
@@ -312,12 +360,26 @@ Focus on objective analysis - does the SQL result actually answer what was asked
                     if evaluation_result.get('result_summary'):
                         self.logger.info(f"  - Summary: {evaluation_result['result_summary']}")
                     
+                    # Log generator context review if available
+                    context_review = evaluation_result.get('generator_context_review')
+                    if context_review:
+                        self.logger.info(f"  Generator context review:")
+                        if context_review.get('generator_reasoning'):
+                            self.logger.info(f"    - Generator reasoning: {context_review['generator_reasoning']}")
+                        if context_review.get('reasoning_validity'):
+                            self.logger.info(f"    - Reasoning validity: {context_review['reasoning_validity'].upper()}")
+                        if context_review.get('context_notes'):
+                            self.logger.info(f"    - Context notes: {context_review['context_notes']}")
+                    
                     # Log issues if any
                     issues = evaluation_result.get('issues', [])
                     if issues:
                         self.logger.info(f"  Issues found:")
                         for issue in issues:
-                            self.logger.info(f"    - [{issue.get('severity', 'N/A').upper()}] {issue.get('description', 'N/A')}")
+                            if isinstance(issue, dict):
+                                self.logger.info(f"    - [{issue.get('severity', 'N/A').upper()}] {issue.get('description', 'N/A')}")
+                            else:
+                                self.logger.info(f"    - {issue}")
                     
                     self.logger.info("="*60)
                     self.logger.info(f"Stored analysis for node {node_id}")
@@ -472,102 +534,54 @@ Focus on objective analysis - does the SQL result actually answer what was asked
         match = re.search(pattern, content, re.DOTALL)
         return match.group(1).strip() if match else None
     
-    def _format_execution_result(self, exec_result: ExecutionResult) -> Dict[str, Any]:
-        """Format ExecutionResult for the prompt"""
-        result = {
-            "status": "success" if not exec_result.error else "error",
-            "row_count": exec_result.rowCount,
-            "data": exec_result.data
-        }
+    def _format_execution_result(self, exec_result) -> Dict[str, Any]:
+        """Format ExecutionResult for the prompt - handles both dict and ExecutionResult object"""
+        # Handle dict format (from evaluation field)
+        if isinstance(exec_result, dict):
+            result = {
+                "status": "success" if not exec_result.get("error") else "error",
+                "row_count": exec_result.get("rowCount", exec_result.get("row_count", 0)),
+                "data": exec_result.get("data", [])
+            }
+            
+            # Add error if present
+            if exec_result.get("error"):
+                result["error"] = exec_result["error"]
+        else:
+            # Handle ExecutionResult object
+            result = {
+                "status": "success" if not exec_result.error else "error",
+                "row_count": exec_result.rowCount,
+                "data": exec_result.data
+            }
+            
+            # Add error if present
+            if exec_result.error:
+                result["error"] = exec_result.error
         
         # Add sample data if we have full data
-        if isinstance(exec_result.data, list) and exec_result.data:
-            result["sample_data"] = exec_result.data[:10]  # First 10 rows
-            if exec_result.rowCount > 10:
-                result["note"] = f"Showing first 10 of {exec_result.rowCount} rows"
-        
-        # Add error if present
-        if exec_result.error:
-            result["error"] = exec_result.error
+        if isinstance(result["data"], list) and result["data"]:
+            result["sample_data"] = result["data"][:10]  # First 10 rows
+            if result["row_count"] > 10:
+                result["note"] = f"Showing first 10 of {result['row_count']} rows"
         
         return result
     
-    async def analyze_execution(self, node_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Analyze SQL execution results for a node.
-        
-        Args:
-            node_id: The ID of the node to analyze
-            
-        Returns:
-            The analysis results or None if failed
-        """
-        self.logger.info(f"Analyzing execution for node: {node_id}")
-        
-        # Set current node ID in QueryTreeManager
-        await self.tree_manager.set_current_node_id(node_id)
-        
-        # Run the agent
-        task = f"node:{node_id} - Analyze SQL execution results"
-        result = await self.run(task)
-        
-        # Get the analysis
-        analysis = await self.memory.get("execution_analysis")
-        return analysis
-    
-    
     def _parse_evaluation_xml(self, output: str) -> Optional[Dict[str, Any]]:
-        """Parse the evaluation XML output"""
-        try:
-            # Extract XML from output
-            xml_match = re.search(r'<evaluation>.*?</evaluation>', output, re.DOTALL)
-            if not xml_match:
-                # Try to find XML in code blocks
-                xml_match = re.search(r'```xml\s*\n(.*?)\n```', output, re.DOTALL)
-                if xml_match:
-                    xml_content = xml_match.group(1)
-                else:
-                    self.logger.error("No evaluation XML found in output")
-                    return None
+        """Parse the evaluation XML output using hybrid approach"""
+        # Use the hybrid parsing utility
+        result = parse_xml_hybrid(output, 'evaluation')
+        
+        if result:
+            # Convert confidence_score to float if it exists
+            if result.get("confidence_score"):
+                try:
+                    result["confidence_score"] = float(result["confidence_score"])
+                except (ValueError, TypeError):
+                    result["confidence_score"] = 0.5  # Default fallback
             else:
-                xml_content = xml_match.group()
-            
-            # Parse XML
-            root = ET.fromstring(xml_content)
-            
-            result = {
-                "answers_intent": root.findtext("answers_intent", "").strip(),
-                "result_quality": root.findtext("result_quality", "").strip(),
-                "result_summary": root.findtext("result_summary", "").strip(),
-                "confidence_score": float(root.findtext("confidence_score", "0.5"))
-            }
-            
-            # Parse issues
-            issues = []
-            issues_elem = root.find("issues")
-            if issues_elem is not None:
-                for issue_elem in issues_elem.findall("issue"):
-                    issue = {
-                        "type": issue_elem.findtext("type", "").strip(),
-                        "description": issue_elem.findtext("description", "").strip(),
-                        "severity": issue_elem.findtext("severity", "").strip()
-                    }
-                    if issue["type"] or issue["description"]:  # Only add if not empty
-                        issues.append(issue)
-            result["issues"] = issues
-            
-            # Parse suggestions
-            suggestions = []
-            suggestions_elem = root.find("suggestions")
-            if suggestions_elem is not None:
-                for suggestion_elem in suggestions_elem.findall("suggestion"):
-                    suggestion_text = suggestion_elem.text
-                    if suggestion_text and suggestion_text.strip():
-                        suggestions.append(suggestion_text.strip())
-            result["suggestions"] = suggestions
+                result["confidence_score"] = 0.5
             
             return result
-            
-        except Exception as e:
-            self.logger.error(f"Error parsing evaluation XML: {str(e)}", exc_info=True)
-            return None
+        
+        return None

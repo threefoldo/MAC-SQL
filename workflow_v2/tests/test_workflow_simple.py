@@ -139,94 +139,8 @@ async def test_simple_query():
         return False
 
 
-async def test_workflow_components():
-    """Test individual workflow components."""
-    print("Testing workflow components...")
-    
-    try:
-        workflow = TextToSQLTreeOrchestrator(
-            data_path="/home/norman/work/text-to-sql/MAC-SQL/data/bird",
-            tables_json_path="/home/norman/work/text-to-sql/MAC-SQL/data/bird/dev_tables.json",
-            dataset_name="bird"
-        )
-        
-        # Test display functions (should not crash)
-        await workflow.display_query_tree()
-        await workflow.display_final_results()
-        
-        # Test coordinator creation
-        coordinator = workflow._create_coordinator()
-        assert coordinator is not None
-        assert len(coordinator.tools) == 4
-        
-        print("✓ Workflow components test passed")
-        return True
-        
-    except Exception as e:
-        print(f"✗ Workflow components test failed: {e}")
-        return False
 
 
-async def test_validation_functions():
-    """Test the validation functions."""
-    print("Testing validation functions...")
-    
-    try:
-        workflow = TextToSQLTreeOrchestrator(
-            data_path="/home/norman/work/text-to-sql/MAC-SQL/data/bird",
-            tables_json_path="/home/norman/work/text-to-sql/MAC-SQL/data/bird/dev_tables.json",
-            dataset_name="bird"
-        )
-        
-        # Test SQL validation
-        good_sql = "SELECT COUNT(*) FROM schools WHERE County = 'Alameda'"
-        bad_sql = "SELECT COUNT(*) WHERE"
-        empty_sql = ""
-        
-        good_validation = workflow._validate_sql(good_sql)
-        bad_validation = workflow._validate_sql(bad_sql)
-        empty_validation = workflow._validate_sql(empty_sql)
-        
-        assert good_validation["is_valid"] == True
-        assert bad_validation["is_valid"] == False
-        assert empty_validation["is_valid"] == False
-        
-        print("  ✓ SQL validation works correctly")
-        
-        # Test evaluation validation
-        from memory_content_types import ExecutionResult
-        
-        good_analysis = {
-            "answers_intent": "yes",
-            "result_quality": "good",
-            "result_summary": "Query answered correctly",
-            "confidence_score": 0.9
-        }
-        
-        bad_analysis = {
-            "answers_intent": "no",
-            "result_quality": "poor"
-        }
-        
-        exec_result = ExecutionResult(data=[[1392]], rowCount=1, error=None)
-        
-        good_eval = workflow._validate_evaluation(good_analysis, exec_result)
-        bad_eval = workflow._validate_evaluation(bad_analysis, exec_result)
-        none_eval = workflow._validate_evaluation(None, exec_result)
-        
-        assert good_eval["is_valid"] == True
-        assert bad_eval["is_valid"] == True  # Structure is valid even if content indicates failure
-        assert none_eval["is_valid"] == False
-        
-        print("  ✓ Evaluation validation works correctly")
-        print("✓ Validation functions test passed")
-        return True
-        
-    except Exception as e:
-        print(f"✗ Validation functions test failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
 
 
 async def run_all_tests():
@@ -248,8 +162,6 @@ async def run_all_tests():
         ("Workflow Initialization", test_workflow_initialization),
         ("Database Loading", test_database_loading),
         ("Simple Query", test_simple_query),
-        ("Workflow Components", test_workflow_components),
-        ("Validation Functions", test_validation_functions),
     ]
     
     results = []

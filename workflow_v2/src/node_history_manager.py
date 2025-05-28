@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 
 from keyvalue_memory import KeyValueMemory
-from memory_content_types import NodeOperation, NodeOperationType, QueryMapping
+from memory_content_types import NodeOperation, NodeOperationType
 
 
 class NodeHistoryManager:
@@ -46,7 +46,7 @@ class NodeHistoryManager:
         self.logger.info(f"Added {operation.operation.value} operation for node {operation.nodeId}")
     
     async def record_create(self, node_id: str, intent: str, 
-                          mapping: Optional[QueryMapping] = None,
+                          mapping: Optional[Dict[str, Any]] = None,
                           combine_strategy: Optional[Dict[str, Any]] = None) -> None:
         """
         Record a node creation operation.
@@ -54,12 +54,12 @@ class NodeHistoryManager:
         Args:
             node_id: The node ID
             intent: The intent for the node
-            mapping: Optional mapping information
+            mapping: Optional mapping information (as dict)
             combine_strategy: Optional combine strategy
         """
         data = {"intent": intent}
         if mapping:
-            data["mapping"] = mapping.to_dict()
+            data["mapping"] = mapping
         if combine_strategy:
             data["combineStrategy"] = combine_strategy
         
@@ -119,10 +119,10 @@ class NodeHistoryManager:
     async def record_revise(self, node_id: str, 
                           new_intent: Optional[str] = None,
                           new_sql: Optional[str] = None,
-                          new_mapping: Optional[QueryMapping] = None,
+                          new_mapping: Optional[Dict[str, Any]] = None,
                           previous_intent: Optional[str] = None,
                           previous_sql: Optional[str] = None,
-                          previous_mapping: Optional[QueryMapping] = None) -> None:
+                          previous_mapping: Optional[Dict[str, Any]] = None) -> None:
         """
         Record a node revision operation.
         
@@ -142,14 +142,14 @@ class NodeHistoryManager:
         if new_sql:
             data["sql"] = new_sql
         if new_mapping:
-            data["mapping"] = new_mapping.to_dict()
+            data["mapping"] = new_mapping
         
         if previous_intent:
             data["previousIntent"] = previous_intent
         if previous_sql:
             data["previousSql"] = previous_sql
         if previous_mapping:
-            data["previousMapping"] = previous_mapping.to_dict()
+            data["previousMapping"] = previous_mapping
         
         operation = NodeOperation(
             timestamp=datetime.now().isoformat(),
