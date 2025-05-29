@@ -1,7 +1,8 @@
 """
 Node history manager for text-to-SQL tree orchestration.
 
-This module provides easy access to node operation history stored in KeyValueMemory.
+This module provides node operation history stored in KeyValueMemory.
+All nodes share QueryNode structure for consistency and essential information storage.
 """
 
 import logging
@@ -9,11 +10,11 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 
 from keyvalue_memory import KeyValueMemory
-from memory_content_types import NodeOperation, NodeOperationType
+from memory_content_types import NodeOperation, NodeOperationType, QueryNode, NodeStatus
 
 
 class NodeHistoryManager:
-    """Manages node operation history in memory."""
+    """Manages node operation history with QueryNode structure consistency."""
     
     def __init__(self, memory: KeyValueMemory):
         """
@@ -30,156 +31,168 @@ class NodeHistoryManager:
         await self.memory.set("nodeHistory", [])
         self.logger.info("Initialized empty node history")
     
-    async def add_operation(self, operation: NodeOperation) -> None:
+    def _extract_essential_node_info(self, node: QueryNode) -> Dict[str, Any]:
         """
-        Add a new operation to the history.
+        Extract essential information from a QueryNode, removing verbose content.
         
         Args:
-            operation: The operation to add
+            node: The QueryNode to extract from
+            
+        Returns:
+            Dict with essential node information
         """
+        essential = {
+            "nodeId": node.nodeId,
+            "status": node.status.value,
+            "intent": node.intent,
+            "parentId": node.parentId,
+            "childIds": node.childIds[:],  # Copy list
+        }
+        
+        # Include evidence if present
+        if node.evidence:
+            essential["evidence"] = node.evidence
+        
+        # Schema linking - only essential parts
+        if node.schema_linking:
+            schema_essential = {}
+            if "selected_tables" in node.schema_linking:
+                schema_essential["selected_tables"] = node.schema_linking["selected_tables"]
+            if "column_mapping" in node.schema_linking:
+                schema_essential["column_mapping"] = node.schema_linking["column_mapping"]
+            if "foreign_keys" in node.schema_linking:
+                schema_essential["foreign_keys"] = node.schema_linking["foreign_keys"]
+            if schema_essential:
+                essential["schema_linking"] = schema_essential
+        
+        # Generation - only SQL and core info, no explanations
+        if node.generation:
+            gen_essential = {}
+            if "sql" in node.generation:
+                gen_essential["sql"] = node.generation["sql"]
+            if "sql_type" in node.generation:
+                gen_essential["sql_type"] = node.generation["sql_type"]
+            if "confidence" in node.generation:
+                gen_essential["confidence"] = node.generation["confidence"]
+            if gen_essential:
+                essential["generation"] = gen_essential
+        
+        # Evaluation - results and core metrics, no detailed explanations
+        if node.evaluation:
+            eval_essential = {}
+            if "execution_result" in node.evaluation:
+                result = node.evaluation["execution_result"]
+                if isinstance(result, dict):
+                    eval_essential["execution_result"] = {
+                        "data": result.get("data", [])[:5],  # Limit to 5 rows
+                        "rowCount": result.get("rowCount", 0),
+                        "error": result.get("error")
+                    }
+                else:
+                    eval_essential["execution_result"] = result
+            
+            if "success" in node.evaluation:
+                eval_essential["success"] = node.evaluation["success"]
+            if "error_type" in node.evaluation:
+                eval_essential["error_type"] = node.evaluation["error_type"]
+            if "quality_score" in node.evaluation:
+                eval_essential["quality_score"] = node.evaluation["quality_score"]
+            if eval_essential:
+                essential["evaluation"] = eval_essential
+        
+        # Decomposition - only structure, no explanations
+        if node.decomposition:
+            decomp_essential = {}
+            if "subqueries" in node.decomposition:
+                decomp_essential["subqueries"] = node.decomposition["subqueries"]
+            if "join_strategy" in node.decomposition:
+                decomp_essential["join_strategy"] = node.decomposition["join_strategy"]
+            if decomp_essential:
+                essential["decomposition"] = decomp_essential
+        
+        return essential
+    
+    async def record_node_operation(self, node: QueryNode, operation_type: NodeOperationType, 
+                                  additional_data: Optional[Dict[str, Any]] = None) -> None:
+        """
+        Record any node operation with QueryNode structure.
+        
+        Args:
+            node: The QueryNode to record
+            operation_type: The type of operation being performed
+            additional_data: Optional additional data to include
+        """
+        essential_info = self._extract_essential_node_info(node)
+        
+        # Add any additional data
+        if additional_data:
+            essential_info.update(additional_data)
+        
+        operation = NodeOperation(
+            timestamp=datetime.now().isoformat(),
+            nodeId=node.nodeId,
+            operation=operation_type,
+            data=essential_info
+        )
+        
         history = await self.memory.get("nodeHistory")
         if history is None:
             history = []
         
         history.append(operation.to_dict())
         await self.memory.set("nodeHistory", history)
-        self.logger.info(f"Added {operation.operation.value} operation for node {operation.nodeId}")
+        self.logger.info(f"Recorded {operation_type.value} operation for node {node.nodeId}")
     
-    async def record_create(self, node_id: str, intent: str, 
-                          mapping: Optional[Dict[str, Any]] = None,
-                          combine_strategy: Optional[Dict[str, Any]] = None) -> None:
+    async def record_create(self, node: QueryNode) -> None:
         """
-        Record a node creation operation.
+        Record node creation operation.
         
         Args:
-            node_id: The node ID
-            intent: The intent for the node
-            mapping: Optional mapping information (as dict)
-            combine_strategy: Optional combine strategy
+            node: The QueryNode that was created
         """
-        data = {"intent": intent}
-        if mapping:
-            data["mapping"] = mapping
-        if combine_strategy:
-            data["combineStrategy"] = combine_strategy
-        
-        operation = NodeOperation(
-            timestamp=datetime.now().isoformat(),
-            nodeId=node_id,
-            operation=NodeOperationType.CREATE,
-            data=data
-        )
-        
-        await self.add_operation(operation)
+        await self.record_node_operation(node, NodeOperationType.CREATE)
     
-    async def record_generate_sql(self, node_id: str, sql: str) -> None:
+    async def record_generate_sql(self, node: QueryNode) -> None:
         """
-        Record SQL generation for a node.
+        Record SQL generation operation.
         
         Args:
-            node_id: The node ID
-            sql: The generated SQL
+            node: The QueryNode with generated SQL
         """
-        operation = NodeOperation(
-            timestamp=datetime.now().isoformat(),
-            nodeId=node_id,
-            operation=NodeOperationType.GENERATE_SQL,
-            data={"sql": sql}
-        )
-        
-        await self.add_operation(operation)
+        await self.record_node_operation(node, NodeOperationType.GENERATE_SQL)
     
-    async def record_execute(self, node_id: str, sql: str, 
-                           result: Optional[Any] = None, 
-                           error: Optional[str] = None) -> None:
+    async def record_execute(self, node: QueryNode, error: Optional[str] = None) -> None:
         """
-        Record SQL execution for a node.
+        Record SQL execution operation.
         
         Args:
-            node_id: The node ID
-            sql: The executed SQL
-            result: Optional execution result
-            error: Optional error message
+            node: The QueryNode with execution results
+            error: Optional execution error
         """
-        data = {"sql": sql}
-        if result is not None:
-            data["result"] = result
-        if error:
-            data["error"] = error
-        
-        operation = NodeOperation(
-            timestamp=datetime.now().isoformat(),
-            nodeId=node_id,
-            operation=NodeOperationType.EXECUTE,
-            data=data
-        )
-        
-        await self.add_operation(operation)
+        additional_data = {"error": error} if error else None
+        await self.record_node_operation(node, NodeOperationType.EXECUTE, additional_data)
     
-    async def record_revise(self, node_id: str, 
-                          new_intent: Optional[str] = None,
-                          new_sql: Optional[str] = None,
-                          new_mapping: Optional[Dict[str, Any]] = None,
-                          previous_intent: Optional[str] = None,
-                          previous_sql: Optional[str] = None,
-                          previous_mapping: Optional[Dict[str, Any]] = None) -> None:
+    async def record_revise(self, node: QueryNode, reason: Optional[str] = None) -> None:
         """
-        Record a node revision operation.
+        Record node revision operation.
         
         Args:
-            node_id: The node ID
-            new_intent: New intent if changed
-            new_sql: New SQL if changed
-            new_mapping: New mapping if changed
-            previous_intent: Previous intent
-            previous_sql: Previous SQL
-            previous_mapping: Previous mapping
+            node: The revised QueryNode
+            reason: Optional reason for revision
         """
-        data = {}
-        
-        if new_intent:
-            data["intent"] = new_intent
-        if new_sql:
-            data["sql"] = new_sql
-        if new_mapping:
-            data["mapping"] = new_mapping
-        
-        if previous_intent:
-            data["previousIntent"] = previous_intent
-        if previous_sql:
-            data["previousSql"] = previous_sql
-        if previous_mapping:
-            data["previousMapping"] = previous_mapping
-        
-        operation = NodeOperation(
-            timestamp=datetime.now().isoformat(),
-            nodeId=node_id,
-            operation=NodeOperationType.REVISE,
-            data=data
-        )
-        
-        await self.add_operation(operation)
+        additional_data = {"reason": reason} if reason else None
+        await self.record_node_operation(node, NodeOperationType.REVISE, additional_data)
     
-    async def record_delete(self, node_id: str, reason: Optional[str] = None) -> None:
+    async def record_delete(self, node: QueryNode, reason: Optional[str] = None) -> None:
         """
-        Record node deletion.
+        Record node deletion operation.
         
         Args:
-            node_id: The node ID
+            node: The QueryNode being deleted
             reason: Optional reason for deletion
         """
-        data = {}
-        if reason:
-            data["reason"] = reason
-        
-        operation = NodeOperation(
-            timestamp=datetime.now().isoformat(),
-            nodeId=node_id,
-            operation=NodeOperationType.DELETE,
-            data=data
-        )
-        
-        await self.add_operation(operation)
+        additional_data = {"reason": reason} if reason else None
+        await self.record_node_operation(node, NodeOperationType.DELETE, additional_data)
     
     async def get_all_operations(self) -> List[NodeOperation]:
         """
@@ -220,24 +233,259 @@ class NodeHistoryManager:
         all_operations = await self.get_all_operations()
         return [op for op in all_operations if op.operation == operation_type]
     
-    async def get_latest_operation(self, node_id: str, 
-                                 operation_type: Optional[NodeOperationType] = None) -> Optional[NodeOperation]:
+    async def get_current_node_state(self, node_id: str) -> Optional[QueryNode]:
         """
-        Get the latest operation for a node.
+        Reconstruct the current QueryNode state from operation history.
         
         Args:
             node_id: The node ID
-            operation_type: Optional operation type filter
             
         Returns:
-            The latest operation or None
+            Current QueryNode state or None if not found
+        """
+        operations = await self.get_node_operations(node_id)
+        if not operations:
+            return None
+        
+        # Start with the latest CREATE or REVISE operation that has full node data
+        base_operation = None
+        for op in reversed(operations):
+            if (op.operation in [NodeOperationType.CREATE, NodeOperationType.REVISE] and 
+                "nodeId" in op.data and "status" in op.data and "intent" in op.data):
+                base_operation = op
+                break
+        
+        if not base_operation:
+            return None
+        
+        # Build QueryNode from base operation data
+        data = base_operation.data.copy()
+        
+        # Apply subsequent operations in chronological order
+        base_time = base_operation.timestamp
+        for op in operations:
+            if op.timestamp > base_time:
+                if op.operation == NodeOperationType.GENERATE_SQL:
+                    if "generation" not in data:
+                        data["generation"] = {}
+                    # Get SQL from the operation data (it's stored in the generation field)
+                    if "generation" in op.data and "sql" in op.data["generation"]:
+                        data["generation"]["sql"] = op.data["generation"]["sql"]
+                    elif "sql" in op.data:
+                        data["generation"]["sql"] = op.data["sql"]
+                    
+                    if "generation" in op.data:
+                        if "sql_type" in op.data["generation"]:
+                            data["generation"]["sql_type"] = op.data["generation"]["sql_type"]
+                        if "confidence" in op.data["generation"]:
+                            data["generation"]["confidence"] = op.data["generation"]["confidence"]
+                    elif "sql_type" in op.data:
+                        data["generation"]["sql_type"] = op.data["sql_type"]
+                    elif "confidence" in op.data:
+                        data["generation"]["confidence"] = op.data["confidence"]
+                    
+                    data["status"] = NodeStatus.SQL_GENERATED.value
+                
+                elif op.operation == NodeOperationType.EXECUTE:
+                    if "evaluation" not in data:
+                        data["evaluation"] = {}
+                    # Check both possible locations for execution result
+                    if "evaluation" in op.data and "execution_result" in op.data["evaluation"]:
+                        data["evaluation"]["execution_result"] = op.data["evaluation"]["execution_result"]
+                    elif "result" in op.data:
+                        data["evaluation"]["execution_result"] = op.data["result"]
+                    
+                    if op.data.get("error"):
+                        data["status"] = NodeStatus.EXECUTED_FAILED.value
+                        data["evaluation"]["error"] = op.data["error"]
+                    else:
+                        data["status"] = NodeStatus.EXECUTED_SUCCESS.value
+                        data["evaluation"]["success"] = True
+        
+        # Convert back to QueryNode
+        try:
+            return QueryNode.from_dict(data)
+        except Exception as e:
+            self.logger.error(f"Failed to reconstruct QueryNode from history: {e}")
+            return None
+    
+    async def get_node_attempts_summary(self, node_id: str) -> Dict[str, Any]:
+        """
+        Get a complete summary of all attempts for a specific node.
+        
+        Args:
+            node_id: The node ID
+            
+        Returns:
+            Dictionary with complete node attempt history
         """
         operations = await self.get_node_operations(node_id)
         
-        if operation_type:
-            operations = [op for op in operations if op.operation == operation_type]
+        attempts = []
+        current_attempt = {}
         
-        return operations[-1] if operations else None
+        for op in operations:
+            if op.operation == NodeOperationType.CREATE:
+                current_attempt = {
+                    "attempt_number": 1,
+                    "created": op.timestamp,
+                    "intent": op.data.get("intent", ""),
+                    "sql_generated": None,
+                    "execution_result": None,
+                    "final_status": "created"
+                }
+            
+            elif op.operation == NodeOperationType.GENERATE_SQL:
+                if current_attempt:
+                    # Extract SQL from appropriate location
+                    sql = ""
+                    confidence = None
+                    if "generation" in op.data:
+                        sql = op.data["generation"].get("sql", "")
+                        confidence = op.data["generation"].get("confidence")
+                    else:
+                        sql = op.data.get("sql", "")
+                        confidence = op.data.get("confidence")
+                    
+                    current_attempt["sql_generated"] = {
+                        "timestamp": op.timestamp,
+                        "sql": sql,
+                        "confidence": confidence
+                    }
+                    current_attempt["final_status"] = "sql_generated"
+            
+            elif op.operation == NodeOperationType.EXECUTE:
+                if current_attempt:
+                    # Extract result from appropriate location
+                    result = None
+                    error = op.data.get("error")
+                    
+                    if "evaluation" in op.data and "execution_result" in op.data["evaluation"]:
+                        result = op.data["evaluation"]["execution_result"]
+                    elif "result" in op.data:
+                        result = op.data["result"]
+                    elif "execution_result" in op.data:
+                        result = op.data["execution_result"]
+                    
+                    current_attempt["execution_result"] = {
+                        "timestamp": op.timestamp,
+                        "result": result,
+                        "error": error,
+                        "success": not bool(error)
+                    }
+                    current_attempt["final_status"] = "executed_success" if not error else "executed_failed"
+            
+            elif op.operation == NodeOperationType.REVISE:
+                # Save current attempt and start new one
+                if current_attempt:
+                    attempts.append(current_attempt.copy())
+                
+                attempt_num = len(attempts) + 2  # +1 for current, +1 for next
+                current_attempt = {
+                    "attempt_number": attempt_num,
+                    "revised": op.timestamp,
+                    "intent": op.data.get("intent", current_attempt.get("intent", "")),
+                    "sql_generated": None,
+                    "execution_result": None,
+                    "final_status": "revised",
+                    "revision_reason": op.data.get("reason", "")
+                }
+            
+            elif op.operation == NodeOperationType.DELETE:
+                if current_attempt:
+                    current_attempt["deleted"] = op.timestamp
+                    current_attempt["final_status"] = "deleted"
+        
+        # Add the final attempt
+        if current_attempt:
+            attempts.append(current_attempt)
+        
+        return {
+            "node_id": node_id,
+            "total_attempts": len(attempts),
+            "attempts": attempts,
+            "final_status": attempts[-1]["final_status"] if attempts else "unknown"
+        }
+    
+    async def get_node_sql_evolution(self, node_id: str) -> List[Dict[str, Any]]:
+        """
+        Get the evolution of SQL for a node through all attempts.
+        
+        Args:
+            node_id: The node ID
+            
+        Returns:
+            List of SQL generations with metadata
+        """
+        operations = await self.get_node_operations(node_id)
+        
+        sql_evolution = []
+        attempt = 1
+        
+        for op in operations:
+            if op.operation == NodeOperationType.GENERATE_SQL:
+                # Extract SQL from the appropriate location
+                sql = ""
+                sql_type = None
+                confidence = None
+                
+                if "generation" in op.data:
+                    generation = op.data["generation"]
+                    sql = generation.get("sql", "")
+                    sql_type = generation.get("sql_type")
+                    confidence = generation.get("confidence")
+                else:
+                    sql = op.data.get("sql", "")
+                    sql_type = op.data.get("sql_type")
+                    confidence = op.data.get("confidence")
+                
+                sql_entry = {
+                    "attempt": attempt,
+                    "timestamp": op.timestamp,
+                    "sql": sql,
+                    "sql_type": sql_type,
+                    "confidence": confidence
+                }
+                sql_evolution.append(sql_entry)
+                attempt += 1
+        
+        return sql_evolution
+    
+    async def get_node_execution_history(self, node_id: str) -> List[Dict[str, Any]]:
+        """
+        Get the complete execution history for a node.
+        
+        Args:
+            node_id: The node ID
+            
+        Returns:
+            List of execution attempts with results
+        """
+        operations = await self.get_node_operations(node_id)
+        
+        executions = []
+        for op in operations:
+            if op.operation == NodeOperationType.EXECUTE:
+                # Extract result from the appropriate location
+                result = None
+                error = op.data.get("error")
+                
+                if "evaluation" in op.data and "execution_result" in op.data["evaluation"]:
+                    result = op.data["evaluation"]["execution_result"]
+                elif "result" in op.data:
+                    result = op.data["result"]
+                elif "execution_result" in op.data:
+                    result = op.data["execution_result"]
+                
+                execution = {
+                    "timestamp": op.timestamp,
+                    "result": result,
+                    "error": error,
+                    "success": not bool(error)
+                }
+                executions.append(execution)
+        
+        return executions
     
     async def get_node_lifecycle(self, node_id: str) -> Dict[str, Any]:
         """
@@ -275,6 +523,51 @@ class NodeHistoryManager:
         
         return lifecycle
     
+    async def get_history_summary(self) -> Dict[str, Any]:
+        """
+        Get a summary of the operation history.
+        
+        Returns:
+            Dictionary with history statistics
+        """
+        all_operations = await self.get_all_operations()
+        
+        operation_counts = {}
+        for op_type in NodeOperationType:
+            operation_counts[op_type.value] = 0
+        
+        unique_nodes = set()
+        failed_executions = 0
+        successful_executions = 0
+        total_sql_generated = 0
+        
+        for op in all_operations:
+            operation_counts[op.operation.value] += 1
+            unique_nodes.add(op.nodeId)
+            
+            if op.operation == NodeOperationType.EXECUTE:
+                if op.data.get("error"):
+                    failed_executions += 1
+                else:
+                    successful_executions += 1
+            
+            elif op.operation == NodeOperationType.GENERATE_SQL:
+                total_sql_generated += 1
+        
+        return {
+            "total_operations": len(all_operations),
+            "unique_nodes": len(unique_nodes),
+            "operation_counts": operation_counts,
+            "execution_stats": {
+                "total_executions": failed_executions + successful_executions,
+                "successful_executions": successful_executions,
+                "failed_executions": failed_executions,
+                "success_rate": successful_executions / (failed_executions + successful_executions) if (failed_executions + successful_executions) > 0 else 0
+            },
+            "sql_generation_count": total_sql_generated,
+            "deleted_nodes": operation_counts[NodeOperationType.DELETE.value]
+        }
+    
     async def get_deleted_nodes(self) -> List[str]:
         """
         Get IDs of all deleted nodes.
@@ -295,132 +588,12 @@ class NodeHistoryManager:
         executions = await self.get_operations_by_type(NodeOperationType.EXECUTE)
         return [op for op in executions if op.data.get("error")]
     
-    async def get_revision_history(self, node_id: str) -> List[Dict[str, Any]]:
+    async def get_successful_executions(self) -> List[NodeOperation]:
         """
-        Get the revision history for a node.
-        
-        Args:
-            node_id: The node ID
-            
-        Returns:
-            List of revision details
-        """
-        operations = await self.get_node_operations(node_id)
-        revisions = []
-        
-        for op in operations:
-            if op.operation == NodeOperationType.REVISE:
-                revision = {
-                    "timestamp": op.timestamp,
-                    "changes": []
-                }
-                
-                if "intent" in op.data and "previousIntent" in op.data:
-                    revision["changes"].append({
-                        "field": "intent",
-                        "from": op.data["previousIntent"],
-                        "to": op.data["intent"]
-                    })
-                
-                if "sql" in op.data and "previousSql" in op.data:
-                    revision["changes"].append({
-                        "field": "sql",
-                        "from": op.data["previousSql"],
-                        "to": op.data["sql"]
-                    })
-                
-                if "mapping" in op.data and "previousMapping" in op.data:
-                    revision["changes"].append({
-                        "field": "mapping",
-                        "from": op.data["previousMapping"],
-                        "to": op.data["mapping"]
-                    })
-                
-                revisions.append(revision)
-        
-        return revisions
-    
-    async def get_node_retry_count(self, node_id: str) -> int:
-        """
-        Count how many times a node has been retried (revise + generate_sql operations after initial creation).
-        
-        Args:
-            node_id: The node ID
-            
-        Returns:
-            Number of retry attempts
-        """
-        operations = await self.get_node_operations(node_id)
-        
-        # Count SQL generation operations (excluding the first one)
-        sql_gen_count = 0
-        revise_count = 0
-        
-        for op in operations:
-            if op.operation == NodeOperationType.GENERATE_SQL:
-                sql_gen_count += 1
-            elif op.operation == NodeOperationType.REVISE:
-                revise_count += 1
-        
-        # Retry count is SQL generations beyond the first one
-        # Each retry involves a revise + generate_sql
-        retry_count = max(0, sql_gen_count - 1)
-        
-        self.logger.debug(f"Node {node_id} has {retry_count} retry attempts (sql_gen: {sql_gen_count}, revise: {revise_count})")
-        return retry_count
-    
-    async def get_operations_in_timerange(self, start_time: str, end_time: str) -> List[NodeOperation]:
-        """
-        Get operations within a time range.
-        
-        Args:
-            start_time: ISO format start time
-            end_time: ISO format end time
-            
-        Returns:
-            List of operations within the time range
-        """
-        all_operations = await self.get_all_operations()
-        return [op for op in all_operations 
-                if start_time <= op.timestamp <= end_time]
-    
-    async def get_all(self) -> List[Dict[str, Any]]:
-        """
-        Get all operations in the history as raw dictionaries.
+        Get all successful execution operations.
         
         Returns:
-            List of all operations as dictionaries
+            List of execution operations without errors
         """
-        history = await self.memory.get("nodeHistory")
-        return history if history else []
-    
-    async def get_history_summary(self) -> Dict[str, Any]:
-        """
-        Get a summary of the operation history.
-        
-        Returns:
-            Dictionary with history statistics
-        """
-        all_operations = await self.get_all_operations()
-        
-        operation_counts = {}
-        for op_type in NodeOperationType:
-            operation_counts[op_type.value] = 0
-        
-        unique_nodes = set()
-        failed_executions = 0
-        
-        for op in all_operations:
-            operation_counts[op.operation.value] += 1
-            unique_nodes.add(op.nodeId)
-            
-            if op.operation == NodeOperationType.EXECUTE and op.data.get("error"):
-                failed_executions += 1
-        
-        return {
-            "total_operations": len(all_operations),
-            "unique_nodes": len(unique_nodes),
-            "operation_counts": operation_counts,
-            "failed_executions": failed_executions,
-            "deleted_nodes": operation_counts[NodeOperationType.DELETE.value]
-        }
+        executions = await self.get_operations_by_type(NodeOperationType.EXECUTE)
+        return [op for op in executions if not op.data.get("error")]
