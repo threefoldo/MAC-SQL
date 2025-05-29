@@ -180,13 +180,9 @@ IMPORTANT: Your analysis will be stored in the query tree node and used by SQLGe
         schema_xml = await self._get_schema_xml()
         context["schema"] = schema_xml
         
-        # Get schema analysis context if available for schema-informed decomposition
-        schema_linking = await memory.get("schema_linking")
-        if schema_linking and schema_linking.get("schema_analysis"):
-            context["schema_analysis"] = schema_linking["schema_analysis"]
-            self.logger.debug("Found existing schema analysis - will use for schema-informed decomposition")
-        else:
-            self.logger.debug("No schema analysis found - decomposition will be schema-agnostic")
+        # Schema analysis is not needed here as query analysis happens before schema linking
+        # The query analyzer should work independently without schema-specific context
+        self.logger.debug("Query analysis will be schema-agnostic")
         
         self.logger.info(f"Query analyzer context prepared with schema length: {len(schema_xml)}")
         self.logger.info(f"query: {context['query']} database: {context.get('database_id', 'N/A')}")
@@ -241,7 +237,7 @@ IMPORTANT: Your analysis will be stored in the query tree node and used by SQLGe
                 
                 # Store the analysis result in memory as well (for backwards compatibility)
                 analysis["root_node_id"] = current_node_id
-                await memory.set("query_analysis", analysis)
+                # Analysis is stored in the query tree nodes, not in memory directly
                 
                 # User-friendly logging
                 self.logger.info("="*60)

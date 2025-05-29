@@ -65,9 +65,14 @@ class TestWorkflowFixed:
         assert first_node["sql"] is not None
         assert first_node["execution_result"] is not None
         
+        # Print results for debugging
+        print(f"Results: {results}")
+        print(f"Tree complete: {results.get('tree_complete')}")
+        print(f"Final result: {results.get('final_result')}")
+        
         # This query should complete successfully
         assert results["tree_complete"] == True
-        assert len(results["final_results"]) > 0
+        assert results["final_result"] is not None
     
     @pytest.mark.asyncio
     async def test_count_query(self, workflow):

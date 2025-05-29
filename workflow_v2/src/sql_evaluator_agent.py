@@ -37,8 +37,13 @@ class SQLEvaluatorAgent(BaseMemoryAgent):
     
     def _initialize_managers(self):
         """Initialize the managers needed for SQL execution analysis"""
+        from task_context_manager import TaskContextManager
+        from database_schema_manager import DatabaseSchemaManager
+        
         self.tree_manager = QueryTreeManager(self.memory)
         self.history_manager = NodeHistoryManager(self.memory)
+        self.task_manager = TaskContextManager(self.memory)
+        self.schema_manager = DatabaseSchemaManager(self.memory)
     
     def _build_system_message(self) -> str:
         """Build the system message for SQL result analysis"""
@@ -196,23 +201,23 @@ Focus on objective analysis - does the SQL result actually answer what was asked
             sql = node.generation.get("sql") if node.generation else None
             if sql:
                 # Get task context to get database name
-                task_context = await memory.get("taskContext")
+                task_context = await self.task_manager.get_context()
                 if not task_context:
-                    self.logger.error("No task context found in memory")
+                    self.logger.error("No task context found")
                     return context
                 
-                db_name = task_context.get("databaseName")
+                db_name = task_context.databaseName
                 if not db_name:
                     self.logger.error("No database name in task context")
                     return context
                 
                 # Get data path and dataset name from database schema
-                db_schema = await memory.get("databaseSchema")
+                schema_summary = await self.schema_manager.get_schema_summary()
                 data_path = None
                 dataset_name = "bird"  # Default to bird
                 
-                if db_schema and "metadata" in db_schema:
-                    metadata = db_schema["metadata"]
+                if schema_summary and "metadata" in schema_summary:
+                    metadata = schema_summary["metadata"]
                     data_path = metadata.get("data_path")
                     dataset_name = metadata.get("dataset_name", "bird")
                 
@@ -294,8 +299,7 @@ Focus on objective analysis - does the SQL result actually answer what was asked
             evaluation_result = self._parse_evaluation_xml(last_message)
             
             if evaluation_result:
-                # Store analysis
-                await memory.set("execution_analysis", evaluation_result)
+                # Analysis is now stored directly in the node's evaluation field
                 
                 # Get node ID
                 node_id = None
@@ -308,15 +312,16 @@ Focus on objective analysis - does the SQL result actually answer what was asked
                     node_id = await self.tree_manager.get_current_node_id()
                 
                 if node_id:
-                    # Store analysis for the node
-                    await memory.set(f"node_{node_id}_analysis", evaluation_result)
-                    
-                    # Store the entire evaluation result in the QueryTree node
-                    await self.tree_manager.update_node(node_id, {"sqlEvaluation": evaluation_result})
-                    
-                    # Also store evaluation results using the dedicated method (for backwards compatibility)
-                    await self.tree_manager.update_node_evaluation(node_id, evaluation_result)
-                    self.logger.info(f"Stored complete evaluation result in query tree node {node_id}")
+                    # Get the current node to preserve existing evaluation data
+                    node = await self.tree_manager.get_node(node_id)
+                    if node:
+                        # Merge the new evaluation result with existing evaluation data
+                        existing_evaluation = node.evaluation or {}
+                        updated_evaluation = {**existing_evaluation, **evaluation_result}
+                        
+                        # Store evaluation result in the node's evaluation field
+                        await self.tree_manager.update_node(node_id, {"evaluation": updated_evaluation})
+                        self.logger.info(f"Stored complete evaluation result in query tree node {node_id}")
                     
                     # Note: Node status is already updated when execution result is stored
                     # The status (EXECUTED_SUCCESS or EXECUTED_FAILED) is set based on whether
@@ -331,9 +336,9 @@ Focus on objective analysis - does the SQL result actually answer what was asked
                     if node:
                         self.logger.info(f"Query intent: {node.intent}")
                     
-                    # Log execution status
-                    exec_result = await memory.get("execution_result")
-                    if exec_result:
+                    # Log execution status from node's evaluation field
+                    if node and node.evaluation and "execution_result" in node.evaluation:
+                        exec_result = node.evaluation["execution_result"]
                         if exec_result.get("status") == "success":
                             self.logger.info(f"✓ SQL executed successfully")
                             self.logger.info(f"  Returned {exec_result.get('row_count', 0)} row(s)")
@@ -396,8 +401,12 @@ Focus on objective analysis - does the SQL result actually answer what was asked
                 
         except Exception as e:
             self.logger.error(f"Error parsing evaluation results: {str(e)}", exc_info=True)
-            # Store raw analysis
-            await memory.set("execution_analysis_raw", last_message)
+            # Try to store raw output in node's evaluation field
+            node_id = await self.tree_manager.get_current_node_id()
+            if node_id:
+                await self.tree_manager.update_node(node_id, {
+                    "evaluation": {"raw_output": last_message, "parse_error": str(e)}
+                })
     
     # Node progression is now handled by TaskStatusChecker
     # The following method has been removed as it's no longer needed

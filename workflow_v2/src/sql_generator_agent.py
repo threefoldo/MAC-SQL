@@ -160,7 +160,7 @@ Extract from the "current_node" JSON:
 
 ## Output Format
 
-<sql_generation>
+<generation>
   <query_type>simple|join|aggregate|subquery|complex</query_type>
   <sql>
     -- Your SQL query here
@@ -178,7 +178,7 @@ Extract from the "current_node" JSON:
     - Changes from previous attempt (if retry)
     - Data type formatting applied (e.g., removed quotes from numeric values)
   </considerations>
-</sql_generation>
+</generation>
 
 ## SQLite Best Practices
 - Use table aliases and qualify all columns
@@ -275,25 +275,26 @@ For retries, explain what failed and what you changed."""
             
             if generation_result and generation_result.get("sql"):
                 sql = generation_result["sql"]
+                explanation = generation_result.get("explanation", "")
+                considerations = generation_result.get("considerations", "")
                 
                 # Get current node ID from QueryTreeManager
                 node_id = await self.tree_manager.get_current_node_id()
                 
                 if node_id:
-                    # Store the entire generation result in the QueryTree node
+                    # Store the generation result in the QueryTree node
                     await self.tree_manager.update_node(node_id, {"generation": generation_result})
                     
-                    # Update the node with SQL (for backwards compatibility)
+                    # Update the node with SQL 
                     await self.tree_manager.update_node_sql(node_id, sql)
                     
-                    # Store explanation and considerations in the node for next agents to use
+                    # Store explanation and considerations in the node
                     await self.tree_manager.update_node_sql_context(
                         node_id=node_id,
-                        explanation=generation_result.get("explanation", ""),
-                        considerations=generation_result.get("considerations", ""),
+                        explanation=explanation,
+                        considerations=considerations,
                         query_type=generation_result.get("query_type", "simple")
                     )
-                    self.logger.info(f"Stored complete SQL generation result in node {node_id}")
                     
                     # Record in history
                     await self.history_manager.record_generate_sql(
@@ -301,55 +302,20 @@ For retries, explain what failed and what you changed."""
                         sql=sql
                     )
                     
-                    # Enhanced user-friendly logging
+                    # Basic logging
                     self.logger.info("="*60)
                     self.logger.info("SQL Generation")
-                    
-                    # Get node for intent and mapping details
-                    node = await self.tree_manager.get_node(node_id)
-                    if node:
-                        self.logger.info(f"Query intent: {node.intent}")
-                        
-                        # Check for single table solution indicators from schema linking
-                        node_dict = node.to_dict()
-                        schema_linking = node_dict.get("schema_linking", {})
-                        if schema_linking.get("tables"):
-                            table_count = len(schema_linking["tables"])
-                            if table_count == 1:
-                                self.logger.info("✓ Single-table solution generated")
-                            else:
-                                self.logger.info(f"Multi-table solution ({table_count} tables)")
-                            
-                            # Show table utilization
-                            self.logger.info("Table utilization:")
-                            for table in schema_linking["tables"]:
-                                table_name = table.get("name", "unknown") if isinstance(table, dict) else str(table)
-                                self.logger.info(f"  - {table_name}")
-                    
-                    # Log query type and complexity
-                    if generation_result.get("query_type"):
-                        query_type = generation_result['query_type'].upper()
-                        self.logger.info(f"Query type: {query_type}")
-                    
-                    # Check for retry indicators
-                    if node and node.generation and node.generation.get("sql"):
-                        self.logger.info("⚠️  Retry generation (previous SQL existed)")
-                    
-                    # Log the generated SQL
-                    self.logger.info("Generated SQL:")
-                    # Format SQL for better readability
+                    self.logger.info(f"Generated SQL:")
                     sql_lines = sql.split('\n') if '\n' in sql else [sql]
                     for line in sql_lines:
                         if line.strip():
                             self.logger.info(f"  {line}")
                     
-                    # Log explanation if available
-                    if generation_result.get("explanation"):
-                        self.logger.info(f"Explanation: {generation_result['explanation']}")
+                    if explanation:
+                        self.logger.info(f"Explanation: {explanation}")
                     
-                    # Log considerations for retries
-                    if generation_result.get("considerations"):
-                        self.logger.info(f"Considerations: {generation_result['considerations']}")
+                    if considerations:
+                        self.logger.info(f"Considerations: {considerations}")
                     
                     self.logger.info("="*60)
                     self.logger.info(f"Updated node {node_id} with generated SQL")
@@ -363,7 +329,7 @@ For retries, explain what failed and what you changed."""
     def _parse_generation_xml(self, output: str) -> Optional[Dict[str, Any]]:
         """Parse the SQL generation XML output using hybrid approach"""
         # Use the hybrid parsing utility
-        result = parse_xml_hybrid(output, 'sql_generation')
+        result = parse_xml_hybrid(output, 'generation')
         
         if result:
             # Clean up SQL (preserve line structure but remove extra whitespace)

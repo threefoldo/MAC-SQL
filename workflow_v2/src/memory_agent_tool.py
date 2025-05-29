@@ -26,7 +26,7 @@ MemoryParserCallbackType = Callable[[Memory, str, TaskResult, CancellationToken]
 class MemoryAgentToolArgs(BaseModel):
     """Input arguments for the MemoryAgentTool."""
     
-    task: Annotated[str, "The task to be executed."]
+    goal: Annotated[str, "The goal to be achieved."]
 
 
 class MemoryAgentToolConfig(BaseModel):
@@ -134,34 +134,34 @@ class MemoryAgentTool(BaseTool[MemoryAgentToolArgs, TaskResult], Component[Memor
         Returns:
             The result of the task execution
         """
-        task = args.task
+        goal = args.goal
         memory_context = {}
         
         # Step 1: Read from memory if both memory and reader callback are available
         if self._memory and self._reader_callback:
             try:
-                memory_context = await self._reader_callback(self._memory, task, cancellation_token)
+                memory_context = await self._reader_callback(self._memory, goal, cancellation_token)
                 logging.debug(f"[{self.__class__.__name__}] Read memory context: {list(memory_context.keys())}")
             except Exception as e:
                 logging.error(f"[{self.__class__.__name__}] Error reading from memory: {str(e)}", exc_info=True)
         
-        # Step 2: Enhance task with memory context if available
-        enhanced_task = task
+        # Step 2: Enhance goal with memory context if available
+        enhanced_goal = goal
         if memory_context:
             # Simple approach: add context as formatted text
             formatted_context = self._format_memory_context(memory_context)
             if formatted_context:
-                enhanced_task = f"{formatted_context}\n\n{task}"
-                logging.debug(f"[{self.__class__.__name__}] Enhanced task with memory context")
+                enhanced_goal = f"{formatted_context}\n\n{goal}"
+                logging.debug(f"[{self.__class__.__name__}] Enhanced goal with memory context")
         
-        # Step 3: Run the agent with enhanced task
-        result = await self._agent.run(task=enhanced_task, cancellation_token=cancellation_token)
+        # Step 3: Run the agent with enhanced goal
+        result = await self._agent.run(task=enhanced_goal, cancellation_token=cancellation_token)
         
         # Step 4: Update memory if both memory and parser callback are available
         if self._memory and self._parser_callback:
             try:
-                await self._parser_callback(self._memory, task, result, cancellation_token)
-                logging.debug(f"[{self.__class__.__name__}] Updated memory with task result")
+                await self._parser_callback(self._memory, goal, result, cancellation_token)
+                logging.debug(f"[{self.__class__.__name__}] Updated memory with goal result")
             except Exception as e:
                 logging.error(f"[{self.__class__.__name__}] Error updating memory: {str(e)}", exc_info=True)
         

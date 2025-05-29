@@ -174,6 +174,8 @@ If this is a retry with issues:
 
 ## Output Format
 
+**CRITICAL: Generate valid XML. Use CDATA for special characters or complex values.**
+
 <schema_linking>
   <available_schema>
     <tables>
@@ -189,12 +191,12 @@ If this is a retry with issues:
     <query_term original="user_search_term_here">
       <all_candidates>
         <candidate table="table1_name" column="column1_name" confidence="high">
-          <typical_values>actual_values_from_this_column</typical_values>
+          <typical_values><![CDATA[['value1', 'value2', 'value3']]]></typical_values>
           <exact_match_value>exact_matching_value_if_found</exact_match_value>
           <reason>Exact match found in typical_values</reason>
         </candidate>
         <candidate table="table2_name" column="column2_name" confidence="medium">
-          <typical_values>actual_values_from_this_column</typical_values>
+          <typical_values><![CDATA[[100, 200, 300]]]></typical_values>
           <partial_match_value>partial_matching_value</partial_match_value>
           <reason>Partial match or column name similarity</reason>
         </candidate>
@@ -256,11 +258,11 @@ For retries, explain what changed and why the new approach should work."""
     
     async def _reader_callback(self, memory: KeyValueMemory, task: str, cancellation_token) -> Dict[str, Any]:
         """Read context from memory before schema linking"""
-        # Always use schema_linking (initialized by orchestrator)
-        schema_context = await memory.get("schema_linking")
-        if not schema_context:
-            self.logger.error("schema_linking not found - orchestrator should initialize this")
-            return {"error": "schema_linking not initialized by orchestrator"}
+        # Get task context for original query and evidence
+        task_context = await self.task_manager.get_context()
+        if not task_context:
+            self.logger.error("Task context not found")
+            return {"error": "Task context not initialized"}
         
         # Get current_node_id from QueryTreeManager for node-specific operations
         current_node_id = await self.tree_manager.get_current_node_id()
@@ -291,12 +293,15 @@ For retries, explain what changed and why the new approach should work."""
         # Convert NodeOperation objects to dictionaries
         history_dicts = [op.to_dict() for op in history] if history else []
         
-        # Get SQL evaluation analysis if available
-        analysis_key = f"node_{current_node_id}_analysis"
-        evaluation_analysis = await self.memory.get(analysis_key)
+        # Get SQL evaluation analysis from node if available
+        evaluation_analysis = node.evaluation if node.evaluation else None
         
-        # Combine schema_linking with node-specific information
-        context = schema_context.copy()  # Start with schema context from orchestrator
+        # Create context from task information
+        context = {
+            "original_query": task_context.originalQuery,
+            "database_name": task_context.databaseName,
+            "evidence": task_context.evidence
+        }
         
         # Add node-specific information
         context.update({
@@ -326,17 +331,15 @@ For retries, explain what changed and why the new approach should work."""
             return
             
         last_message = result.messages[-1].content
-        
         # Log the raw output for debugging
-        self.logger.info(f"Raw LLM output (first 500 chars): {last_message[:500]}")
+        self.logger.info(f"Raw LLM output: {last_message}")
         
         try:
             # Parse the XML output
             linking_result = self._parse_linking_xml(last_message)
             
             if linking_result:
-                # Store the schema analysis results back to context for other agents
-                await self._update_schema_linking(memory, linking_result)
+                # Schema linking results are stored in the node, not in separate memory
                 
                 # Get the current node ID from QueryTreeManager
                 node_id = await self.tree_manager.get_current_node_id()
@@ -364,45 +367,8 @@ For retries, explain what changed and why the new approach should work."""
                     # Log column discovery process if available
                     if linking_result.get("column_discovery"):
                         self.logger.info("Column Discovery Process:")
-                        for term, discovery in linking_result["column_discovery"].items():
-                            self.logger.info(f"  Term: '{term}'")
-                            if discovery.get("candidates"):
-                                self.logger.info(f"    Candidates found across ALL tables: {len(discovery['candidates'])}")
-                                # Group by confidence level
-                                high_conf = [c for c in discovery["candidates"] if c.get("confidence") == "high"]
-                                med_conf = [c for c in discovery["candidates"] if c.get("confidence") == "medium"]
-                                low_conf = [c for c in discovery["candidates"] if c.get("confidence") == "low"]
-                                
-                                if high_conf:
-                                    self.logger.info("    HIGH confidence matches (exact value match):")
-                                    for candidate in high_conf[:3]:  # Show top 3
-                                        exact_val = candidate.get("exact_match_value", "")
-                                        self.logger.info(f"      ✓ {candidate['table']}.{candidate['column']} = '{exact_val}'")
-                                
-                                if med_conf:
-                                    self.logger.info(f"    MEDIUM confidence matches: {len(med_conf)} found")
-                                
-                                if low_conf:
-                                    self.logger.info(f"    LOW confidence matches: {len(low_conf)} found")
-                                    
-                            if discovery.get("selected"):
-                                selected_list = ensure_list(discovery["selected"])
-                                
-                                if len(selected_list) > 1:
-                                    self.logger.info(f"    → SELECTED {len(selected_list)} COLUMNS:")
-                                    for sel in selected_list:
-                                        if sel.get("exact_value"):
-                                            display_value = strip_quotes(sel['exact_value'])
-                                            self.logger.info(f"        • {sel['table']}.{sel['column']} = '{display_value}'")
-                                        else:
-                                            self.logger.info(f"        • {sel['table']}.{sel['column']}")
-                                elif selected_list:
-                                    sel = selected_list[0]
-                                    if sel.get("exact_value"):
-                                        display_value = strip_quotes(sel['exact_value'])
-                                        self.logger.info(f"    → SELECTED: {sel['table']}.{sel['column']} = '{display_value}'")
-                                    else:
-                                        self.logger.info(f"    → SELECTED: {sel['table']}.{sel['column']}")
+                        column_discovery = linking_result["column_discovery"]
+                        self.logger.info(f"  {column_discovery}")
                     
                     # Log single-table analysis
                     if linking_result.get("single_table_possible") is not None:
@@ -493,21 +459,3 @@ For retries, explain what changed and why the new approach should work."""
         parsed = parse_xml_hybrid(output, 'schema_linking')
         return parsed
     
-    async def _update_schema_linking(self, memory: KeyValueMemory, linking_result: Dict[str, Any]) -> None:
-        """Update the schema_linking with new schema linking results"""
-        try:
-            # Get current context
-            context = await memory.get("schema_linking")
-            if context:
-                # Update with new schema analysis results
-                context["schema_analysis"] = linking_result
-                context["last_update"] = datetime.now().isoformat()
-                
-                # Store back to memory
-                await memory.set("schema_linking", context)
-                self.logger.debug("Updated schema_linking with new linking results")
-            else:
-                self.logger.warning("schema_linking not found during update")
-                
-        except Exception as e:
-            self.logger.error(f"Error updating schema_linking: {str(e)}", exc_info=True)

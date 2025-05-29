@@ -672,19 +672,15 @@ def extract_xml_content(text: str, tag_name: str) -> Optional[str]:
     if match:
         return match.group()
     
-    # Also try to find in code blocks (with various language tags)
-    code_block_patterns = [
-        rf'```(?:xml)?\s*\n(.*?<{tag_name}>.*?</{tag_name}>.*?)\n```',
-        rf'```\w*\s*\n(.*?<{tag_name}>.*?</{tag_name}>.*?)\n```',  # Matches ```sql_generation etc
-    ]
-    
-    for code_block_pattern in code_block_patterns:
-        match = re.search(code_block_pattern, text, re.DOTALL)
-        if match:
-            xml_content = match.group(1)
-            tag_match = re.search(pattern, xml_content, re.DOTALL)
-            if tag_match:
-                return tag_match.group()
+    # For root tag only, also try to find in code blocks with ```tag_name
+    code_block_pattern = rf'```{tag_name}\s*\n?(.*?)\n?```'
+    match = re.search(code_block_pattern, text, re.DOTALL)
+    if match:
+        xml_content = match.group(1).strip()
+        # Check if the content already has the root tag, if not wrap it
+        if not xml_content.startswith(f'<{tag_name}>'):
+            xml_content = f'<{tag_name}>\n{xml_content}\n</{tag_name}>'
+        return xml_content
     
     return None
 

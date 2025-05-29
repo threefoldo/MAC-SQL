@@ -36,7 +36,7 @@ class QueryTreeManager:
         Returns:
             The root node ID
         """
-        root_id = f"node_{datetime.now().timestamp()}_root"
+        root_id = f"root"
         root_node = QueryNode(
             nodeId=root_id,
             intent=root_intent,

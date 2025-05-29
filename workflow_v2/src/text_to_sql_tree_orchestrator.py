@@ -129,6 +129,7 @@ class TextToSQLTreeOrchestrator:
         self.logger.info(f"  Tables: {summary['table_count']}")
         self.logger.info(f"  Total columns: {summary['total_columns']}")
         self.logger.info(f"  Foreign keys: {summary['total_foreign_keys']}")
+        
     
     def _create_coordinator(self) -> AssistantAgent:
         """Create the coordinator agent with improved prompt."""
@@ -140,104 +141,12 @@ class TextToSQLTreeOrchestrator:
         )
         
         coordinator = AssistantAgent(
-            name="orchestrator",
-            system_message="""You are a FEEDBACK LOOP ORCHESTRATOR for text-to-SQL generation.
+            name="orchestrator", 
+            system_message="""You have 5 tools available: task_status_checker, query_analyzer, schema_linker, sql_generator, sql_evaluator.
 
-## YOUR MISSION: BUILD FEEDBACK LOOPS TO GET GOOD SQL
+RULE: Always call task_status_checker first to check current state.
 
-Your ONLY goal is to construct feedback loops that iterate until you get GOOD SQL results.
-
-**FEEDBACK LOOP PATTERN:**
-1. Check status → 2. If bad SQL, analyze error → 3. Choose agent to change context → 4. Retry → 5. Repeat until GOOD
-
-## AVAILABLE TOOLS:
-- **task_status_checker**: Gets current tree status and node states
-- **schema_linker**: Changes schema context (table/column selection)  
-- **query_analyzer**: Changes query decomposition context
-- **sql_generator**: Generates SQL from current context
-- **sql_evaluator**: Executes SQL and provides error feedback
-
-## FEEDBACK LOOP CONSTRUCTION:
-
-### STEP 1: Always start with task_status_checker
-```
-Call task_status_checker to understand current situation
-```
-
-### STEP 2: Interpret the status report
-The status report tells you:
-- Current node and its state (no_sql, need_eval, good_sql, bad_sql)
-- Error messages if SQL failed
-- Whether nodes reached max retries
-- Completion status
-
-### STEP 3: Choose next agent based on FEEDBACK LOOP LOGIC
-
-**If status shows "No query tree found":**
-- No schema analysis? → Call schema_linker with task=""
-- Has schema? → Call query_analyzer with task=""
-
-**If current node "State: no_sql":**
-- Call sql_generator with task="node_[NODE_ID]"
-
-**If current node "State: need_eval":**
-- Call sql_evaluator with task="node_[NODE_ID]"
-
-**If current node "State: bad_sql":**
-- FEEDBACK LOOP CRITICAL POINT: Analyze error to change context
-- Schema errors (table/column not found) → Call schema_linker with task="node_[NODE_ID]"
-- Logic errors (syntax/joins) → Call query_analyzer with task="node_[NODE_ID]"
-- Unknown errors → Try schema_linker first (most common issue)
-
-**If current node "State: good_sql":**
-- TaskStatusChecker automatically moves to next node
-- Call task_status_checker again to see new current node
-
-**If status shows "All nodes processed successfully":**
-- Say TERMINATE - you achieved the goal!
-
-**If status shows "reached max retries":**
-- Node failed too many times, TaskStatusChecker moved to next
-- Continue the feedback loop with new current node
-
-### STEP 4: After calling any agent, ALWAYS return to task_status_checker
-This completes the feedback loop cycle.
-
-## TERMINATION CONDITIONS:
-
-✅ **SUCCESS TERMINATION:** Say TERMINATE when status shows "All nodes processed successfully"
-❌ **LIMIT TERMINATION:** Say TERMINATE when:
-- You've made 50+ agent calls (step limit reached)
-- 5+ minutes have passed (time limit)
-- All nodes have reached max retries (no more progress possible)
-
-## CRITICAL FEEDBACK LOOP RULES:
-
-1. **ALWAYS start each cycle with task_status_checker**
-2. **NEVER repeat the same failed approach** - if schema_linker fails, try query_analyzer next
-3. **Error messages guide context changes:**
-   - Table/column errors → Change schema context (schema_linker)
-   - Logic/syntax errors → Change decomposition context (query_analyzer)
-4. **Each failure provides information** - agents see full context and adapt
-5. **Context changes break failure patterns** - different context → different SQL
-6. **Trust the process** - keep iterating until good SQL or limits reached
-
-## EXAMPLE FEEDBACK LOOP CYCLES:
-
-**Cycle 1:** task_status_checker → schema_linker → task_status_checker → query_analyzer
-**Cycle 2:** task_status_checker → sql_generator → task_status_checker → sql_evaluator  
-**Cycle 3:** task_status_checker → schema_linker (error context change) → task_status_checker → sql_generator
-**Cycle 4:** task_status_checker → sql_evaluator → task_status_checker → TERMINATE (good result!)
-
-## AGENT TASK PARAMETERS:
-- **Empty task ""**: For initial schema analysis or query analysis
-- **"node_[ID]"**: For node-specific operations (sql_generator, sql_evaluator, retries)
-
-## REMEMBER: 
-- Your job is to BUILD FEEDBACK LOOPS, not to solve SQL directly
-- Each error is information to choose the next context-changing agent
-- Keep iterating until GOOD SQL or limits reached
-- The goal is a working SQL query that answers the user's question""",
+The task_status_checker will tell you which tool to call next.""",
             model_client=coordinator_client,
             tools=[self.query_analyzer.get_tool(), self.schema_linker.get_tool(), 
                    self.sql_generator.get_tool(), self.sql_evaluator.get_tool(),
@@ -252,12 +161,14 @@ This completes the feedback loop cycle.
                            task_id: Optional[str] = None,
                            evidence: Optional[str] = None) -> Dict[str, Any]:
         """
-        Process a text-to-SQL query with fixed initial sequence then flexible feedback-driven orchestration.
+        Process a text-to-SQL query using orchestrator agent for flexible workflow decisions.
         
         WORKFLOW:
-        1. SchemaLinker: Enrich user query with evidence and find relevant schema (ALWAYS FIRST)
-        2. QueryAnalyzer: Create query tree based on schema-enriched understanding (ALWAYS SECOND)  
-        3. Flexible orchestration: Use feedback loops to guide subsequent agent decisions
+        The orchestrator agent will decide the workflow based on task status:
+        1. Schema analysis (if needed)
+        2. Query analysis and decomposition (if needed) 
+        3. SQL generation for each node
+        4. SQL evaluation and iteration until good results
         
         Args:
             query: The natural language query
@@ -277,15 +188,14 @@ This completes the feedback loop cycle.
         await self.task_manager.initialize(task_id, query, db_name, evidence)
         await self.initialize_database(db_name)
         
-        # Initialize schema_linking for coordination
-        await self._initialize_schema_linking(query, db_name, evidence)
+        # Schema linking is now handled through task context and nodes
         
-        # Initialize query tree with root node
+        # Initialize query tree with root node (user query and evidence)
         root_id = await self.tree_manager.initialize(query, evidence)
         await self.tree_manager.set_current_node_id(root_id)
         self.logger.info(f"Initialized query tree with root node: {root_id}")
         
-        self.logger.info(f"Processing query with fixed initial sequence: {query}")
+        self.logger.info(f"Processing query with orchestrator-driven workflow: {query}")
         self.logger.info(f"Database: {db_name}")
         self.logger.info(f"Task ID: {task_id}")
         if evidence:
@@ -311,16 +221,8 @@ This completes the feedback loop cycle.
             termination_condition=termination_condition
         )
         
-        # Initial instruction to start feedback loop construction
-        start_instruction = """Begin building feedback loops to generate good SQL for the user's query.
-
-Start by calling task_status_checker to understand the current situation, then construct feedback loops to iteratively improve until you get good SQL results.
-
-Remember:
-- Always start each cycle with task_status_checker
-- Analyze errors to choose which agent changes context
-- Keep iterating until good SQL or limits reached
-- The task_status_checker will signal completion when ready"""
+        # Initial instruction for state machine operation  
+        start_instruction = """You must call task_status_checker first with goal=""."""
 
         # Run the orchestrator with step and time control
         self.logger.info("Starting orchestrator agent feedback loop construction")
@@ -534,30 +436,7 @@ Remember:
         else:
             print("\nNo final SQL available. Root node has not generated SQL yet.")
     
-    async def _initialize_schema_linking(self, query: str, db_name: str, evidence: str = None) -> None:
-        """
-        Initialize the schema_linking for schema linking coordination.
-        Query decomposition and SQL storage handled by query_tree.
-        """
-        try:
-            # Create the shared context for schema linking
-            schema_context = {
-                "original_query": query,
-                "database_name": db_name,
-                "evidence": evidence,
-                "initialized_at": datetime.now().isoformat(),
-                "schema_analysis": None,  # Updated by SchemaLinker
-                "last_update": None
-            }
-            
-            # Store in memory for SchemaLinker to access
-            await self.memory.set("schema_linking", schema_context)
-            
-            self.logger.debug("✓ Schema linking context initialized")
-            
-        except Exception as e:
-            self.logger.error(f"Error initializing schema_linking: {str(e)}", exc_info=True)
-            raise
+
 
 
 # Convenience function for quick tree orchestration execution
