@@ -157,6 +157,17 @@ class TestSQLEvaluatorAgent:
             }
         })
         
+        # Initialize execution_analysis memory as orchestrator would
+        from datetime import datetime
+        execution_context = {
+            "original_query": query,
+            "node_id": node_id,
+            "initialized_at": datetime.now().isoformat(),
+            "evaluation": None,
+            "last_update": None
+        }
+        await memory.set("execution_analysis", execution_context)
+        
         # Create evaluator
         agent = SQLEvaluatorAgent(memory, llm_config={
             "model_name": "gpt-4o",
@@ -214,6 +225,17 @@ class TestSQLEvaluatorAgent:
             }
         })
         
+        # Initialize execution_analysis memory as orchestrator would
+        from datetime import datetime
+        execution_context = {
+            "original_query": query,
+            "node_id": node_id,
+            "initialized_at": datetime.now().isoformat(),
+            "evaluation": None,
+            "last_update": None
+        }
+        await memory.set("execution_analysis", execution_context)
+        
         # Create evaluator
         agent = SQLEvaluatorAgent(memory, llm_config={
             "model_name": "gpt-4o",
@@ -266,6 +288,17 @@ class TestSQLEvaluatorAgent:
                 "execution_result": execution_result.to_dict()
             }
         })
+        
+        # Initialize execution_analysis memory as orchestrator would
+        from datetime import datetime
+        execution_context = {
+            "original_query": query,
+            "node_id": node_id,
+            "initialized_at": datetime.now().isoformat(),
+            "evaluation": None,
+            "last_update": None
+        }
+        await memory.set("execution_analysis", execution_context)
         
         agent = SQLEvaluatorAgent(memory, llm_config={
             "model_name": "gpt-4o",
@@ -436,6 +469,17 @@ class TestSQLEvaluatorAgent:
                     "execution_result": execution_result.to_dict()
                 }
             })
+            
+            # Initialize execution_analysis memory as orchestrator would
+            from datetime import datetime
+            execution_context = {
+                "original_query": test_case['query'],
+                "node_id": node_id,
+                "initialized_at": datetime.now().isoformat(),
+                "evaluation": None,
+                "last_update": None
+            }
+            await memory.set("execution_analysis", execution_context)
             
             # Create and run evaluator
             agent = SQLEvaluatorAgent(memory, llm_config={

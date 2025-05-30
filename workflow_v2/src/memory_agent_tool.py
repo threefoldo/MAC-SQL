@@ -134,7 +134,7 @@ class MemoryAgentTool(BaseTool[MemoryAgentToolArgs, TaskResult], Component[Memor
         Returns:
             The result of the task execution
         """
-        goal = args.goal
+        goal = args.task if hasattr(args, 'task') else args.goal
         memory_context = {}
         
         # Step 1: Read from memory if both memory and reader callback are available

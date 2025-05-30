@@ -39,6 +39,17 @@ from schema_reader import SchemaReader
 class TestQueryAnalyzerAgent:
     """Test cases for QueryAnalyzerAgent - Verify NO business logic per TESTING_PLAN.md"""
     
+    async def get_analysis_from_node(self, memory):
+        """Helper to get queryAnalysis from root node"""
+        tree_manager = QueryTreeManager(memory)
+        tree_data = await tree_manager.get_tree()
+        
+        # Always get analysis from root node since that's where QueryAnalyzer stores it
+        root_id = tree_data.get("rootId", "root")
+        node_data = tree_data["nodes"][root_id]
+        analysis = node_data.get("queryAnalysis")
+        return analysis
+    
     async def setup_test_environment(self, query: str, task_id: str, db_name: str = "california_schools", with_schema_analysis: bool = False):
         """Setup test environment with schema loaded"""
         memory = KeyValueMemory()
@@ -194,7 +205,7 @@ class TestQueryAnalyzerAgent:
         result = await analyzer.run(query)
         
         # Verify agent stored LLM's analysis WITHOUT modification
-        analysis = await memory.get("query_analysis")
+        analysis = await self.get_analysis_from_node(memory)
         assert analysis is not None
         
         # Agent should NOT have logic to determine:
@@ -237,7 +248,7 @@ class TestQueryAnalyzerAgent:
         assert len(result.messages) > 0
         
         # Check stored analysis
-        analysis = await memory.get("query_analysis")
+        analysis = await self.get_analysis_from_node(memory)
         assert analysis is not None
         
         print(f"\nAgent Behavior Verification:")
@@ -486,7 +497,7 @@ class TestQueryAnalyzerAgent:
         assert len(result.messages) > 0
         
         # Check stored analysis
-        analysis = await memory.get("query_analysis")
+        analysis = await self.get_analysis_from_node(memory)
         assert analysis is not None
         
         print(f"\nSchema-Informed Query Analysis:")
@@ -537,7 +548,7 @@ class TestQueryAnalyzerAgent:
             result = await analyzer.run(query)
             
             # Get analysis
-            analysis = await memory.get("query_analysis")
+            analysis = await self.get_analysis_from_node(memory)
             assert analysis is not None
             
             # CRITICAL VERIFICATION:

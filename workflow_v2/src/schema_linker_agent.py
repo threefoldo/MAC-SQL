@@ -18,8 +18,9 @@ from base_memory_agent import BaseMemoryAgent
 from database_schema_manager import DatabaseSchemaManager
 from query_tree_manager import QueryTreeManager
 from node_history_manager import NodeHistoryManager
+from task_context_manager import TaskContextManager
 from memory_content_types import (
-    QueryNode, TableSchema, ColumnInfo, NodeStatus
+    QueryNode, TableSchema, ColumnInfo, NodeStatus, NodeOperationType
 )
 from prompts import SQL_CONSTRAINTS
 from utils import parse_xml_hybrid, strip_quotes, ensure_list
@@ -40,6 +41,7 @@ class SchemaLinkerAgent(BaseMemoryAgent):
     
     def _initialize_managers(self):
         """Initialize the managers needed for schema linking"""
+        self.task_manager = TaskContextManager(self.memory)
         self.schema_manager = DatabaseSchemaManager(self.memory)
         self.tree_manager = QueryTreeManager(self.memory)
         self.history_manager = NodeHistoryManager(self.memory)
@@ -259,7 +261,7 @@ For retries, explain what changed and why the new approach should work."""
     async def _reader_callback(self, memory: KeyValueMemory, task: str, cancellation_token) -> Dict[str, Any]:
         """Read context from memory before schema linking"""
         # Get task context for original query and evidence
-        task_context = await self.task_manager.get_context()
+        task_context = await self.task_manager.get()
         if not task_context:
             self.logger.error("Task context not found")
             return {"error": "Task context not initialized"}
@@ -349,11 +351,22 @@ For retries, explain what changed and why the new approach should work."""
                     await self.tree_manager.update_node(node_id, {"schema_linking": linking_result})
                     self.logger.info(f"Stored schema linking result in query tree node {node_id}")
                     
-                    # Record in history using record_create method
-                    await self.history_manager.record_create(
-                        node_id=node_id,
-                        intent="Schema linking completed"
-                    )
+                    # Also update the schema_linking memory as expected by tests/orchestrator
+                    schema_context = await self.memory.get("schema_linking")
+                    if schema_context:
+                        schema_context["schema_analysis"] = linking_result
+                        schema_context["last_update"] = datetime.now().isoformat()
+                        await self.memory.set("schema_linking", schema_context)
+                    
+                    # Record in history - get the node and update its status
+                    node = await self.tree_manager.get_node(node_id)
+                    if node:
+                        # Update node status to show schema linking is completed
+                        node.status = NodeStatus.SCHEMA_LINKED if hasattr(NodeStatus, 'SCHEMA_LINKED') else NodeStatus.CREATED
+                        await self.history_manager.record_node_operation(
+                            node, 
+                            NodeOperationType.CREATE
+                        )
                     
                     # Enhanced user-friendly logging
                     self.logger.info("="*60)

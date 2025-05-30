@@ -297,10 +297,9 @@ For retries, explain what failed and what you changed."""
                     )
                     
                     # Record in history
-                    await self.history_manager.record_generate_sql(
-                        node_id=node_id,
-                        sql=sql
-                    )
+                    node = await self.tree_manager.get_node(node_id)
+                    if node:
+                        await self.history_manager.record_generate_sql(node)
                     
                     # Basic logging
                     self.logger.info("="*60)

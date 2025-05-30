@@ -201,7 +201,7 @@ Focus on objective analysis - does the SQL result actually answer what was asked
             sql = node.generation.get("sql") if node.generation else None
             if sql:
                 # Get task context to get database name
-                task_context = await self.task_manager.get_context()
+                task_context = await self.task_manager.get()
                 if not task_context:
                     self.logger.error("No task context found")
                     return context
@@ -322,6 +322,13 @@ Focus on objective analysis - does the SQL result actually answer what was asked
                         # Store evaluation result in the node's evaluation field
                         await self.tree_manager.update_node(node_id, {"evaluation": updated_evaluation})
                         self.logger.info(f"Stored complete evaluation result in query tree node {node_id}")
+                        
+                        # Also update the execution_analysis memory as expected by tests/orchestrator
+                        execution_context = await self.memory.get("execution_analysis")
+                        if execution_context:
+                            execution_context["evaluation"] = evaluation_result
+                            execution_context["last_update"] = datetime.now().isoformat()
+                            await self.memory.set("execution_analysis", execution_context)
                     
                     # Note: Node status is already updated when execution result is stored
                     # The status (EXECUTED_SUCCESS or EXECUTED_FAILED) is set based on whether

@@ -183,7 +183,7 @@ class BaseMemoryAgent(ABC):
         """
         return self.tool
     
-    async def run(self, task: str) -> TaskResult:
+    async def run(self, goal: str) -> TaskResult:
         """
         Run the agent directly (mainly for testing).
         
@@ -198,8 +198,8 @@ class BaseMemoryAgent(ABC):
         # Create a simple task object
         class SimpleTask:
             def __init__(self, task_str):
-                self.task = task_str
+                self.goal = task_str
         
-        return await self.tool.run(SimpleTask(task), cancellation_token=None)
+        return await self.tool.run(SimpleTask(goal), cancellation_token=None)
 
 

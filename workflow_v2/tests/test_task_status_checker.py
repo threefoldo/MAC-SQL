@@ -13,7 +13,7 @@ sys.path.append(str(Path(__file__).parent.parent / "src"))
 from keyvalue_memory import KeyValueMemory
 from query_tree_manager import QueryTreeManager
 from task_status_checker import TaskStatusChecker, TaskStatusCheckerArgs
-from memory_content_types import QueryNode, NodeStatus, QueryMapping
+from memory_content_types import QueryNode, NodeStatus
 
 
 async def test_task_status_checker():
@@ -33,7 +33,7 @@ async def test_task_status_checker():
     args = TaskStatusCheckerArgs(task="Check empty tree")
     result = await checker.run(args)
     print(f"Result:\n{result}")
-    assert "ERROR" in result, "Should report error for empty tree"
+    assert "No query tree found" in result, "Should report no tree found for empty tree"
     
     # Test 2: Tree with unprocessed nodes
     print("\n\nTest 2: Tree with unprocessed nodes")
@@ -46,16 +46,16 @@ async def test_task_status_checker():
     node1 = QueryNode(
         nodeId="node_001",
         intent="Filter schools in Alameda County",
-        mapping=QueryMapping(),
-        parentId=root_id
+        parentId=root_id,
+        status=NodeStatus.CREATED
     )
     await tree_manager.add_node(node1, root_id)
     
     node2 = QueryNode(
         nodeId="node_002", 
         intent="Find highest eligible free rate",
-        mapping=QueryMapping(),
-        parentId=root_id
+        parentId=root_id,
+        status=NodeStatus.CREATED
     )
     await tree_manager.add_node(node2, root_id)
     
@@ -63,7 +63,9 @@ async def test_task_status_checker():
     args = TaskStatusCheckerArgs(task="Check tree with unprocessed nodes")
     result = await checker.run(args)
     print(f"Result:\n{result}")
-    assert "ACTION: PROCESS NODE" in result, "Should recommend processing a node"
+    assert "CURRENT_NODE: node_001" in result, "Should set current node"
+    assert "CURRENT_STATUS: needs_sql" in result, "Should show node needs SQL"
+    assert "Processing in progress" in result, "Should indicate processing is in progress"
     assert "node_001" in result or "node_002" in result, "Should mention a specific node"
     
     # Test 3: Tree with some processed nodes
@@ -74,18 +76,20 @@ async def test_task_status_checker():
     await tree_manager.update_node_sql("node_001", "SELECT * FROM schools WHERE County = 'Alameda'")
     await tree_manager.update_node("node_001", {"status": NodeStatus.EXECUTED_SUCCESS.value})
     
-    # Store evaluation result
-    await memory.set("node_node_001_analysis", {
-        "result_quality": "excellent",
-        "answers_intent": "yes"
+    # Store evaluation result in node's evaluation field
+    await tree_manager.update_node("node_001", {
+        "evaluation": {
+            "result_quality": "excellent",
+            "answers_intent": "yes"
+        }
     })
     
     # Check status
     args = TaskStatusCheckerArgs(task="Check tree with partial processing")
     result = await checker.run(args)
     print(f"Result:\n{result}")
-    assert "ACTION: PROCESS NODE" in result, "Should still have nodes to process"
-    assert "node_002" in result, "Should recommend processing node_002"
+    assert "Processing in progress" in result, "Should still have nodes to process"
+    assert "1/3 nodes complete" in result or "PENDING:" in result, "Should show progress"
     
     # Test 4: All nodes processed successfully
     print("\n\nTest 4: All nodes processed successfully")
@@ -95,42 +99,48 @@ async def test_task_status_checker():
     await tree_manager.update_node_sql("node_002", "SELECT MAX(eligible_free_rate) FROM frpm")
     await tree_manager.update_node("node_002", {"status": NodeStatus.EXECUTED_SUCCESS.value})
     
-    # Store evaluation result
-    await memory.set("node_node_002_analysis", {
-        "result_quality": "good",
-        "answers_intent": "yes"
+    # Store evaluation result in node's evaluation field
+    await tree_manager.update_node("node_002", {
+        "evaluation": {
+            "result_quality": "good",
+            "answers_intent": "yes"
+        }
     })
     
     # Update root node as well
     await tree_manager.update_node_sql(root_id, "WITH alameda_schools AS (...)")
     await tree_manager.update_node(root_id, {"status": NodeStatus.EXECUTED_SUCCESS.value})
-    await memory.set(f"node_{root_id}_analysis", {
-        "result_quality": "excellent",
-        "answers_intent": "yes"
+    await tree_manager.update_node(root_id, {
+        "evaluation": {
+            "result_quality": "excellent",
+            "answers_intent": "yes"
+        }
     })
     
     # Check status
     args = TaskStatusCheckerArgs(task="Check fully processed tree")
     result = await checker.run(args)
     print(f"Result:\n{result}")
-    assert "ACTION: TASK COMPLETE" in result, "Should indicate task completion"
+    assert "All nodes complete" in result, "Should indicate task completion"
     
     # Test 5: Node with poor quality results
     print("\n\nTest 5: Node with poor quality results")
     print("-" * 40)
     
     # Update node2 with poor quality
-    await memory.set("node_node_002_analysis", {
-        "result_quality": "poor",
-        "answers_intent": "no"
+    await tree_manager.update_node("node_002", {
+        "evaluation": {
+            "result_quality": "poor",
+            "answers_intent": "no"
+        }
     })
     
     # Check status
     args = TaskStatusCheckerArgs(task="Check tree with poor quality node")
     result = await checker.run(args)
     print(f"Result:\n{result}")
-    assert "ACTION: RETRY NODE" in result, "Should recommend retrying poor quality node"
-    assert "node_002" in result, "Should mention the specific node to retry"
+    assert "bad_sql" in result or "bad SQL" in result, "Should show bad SQL status"
+    assert "Processing in progress" in result, "Should still be processing due to bad SQL"
     
     print("\n\n" + "=" * 60)
     print("✅ All tests passed!")

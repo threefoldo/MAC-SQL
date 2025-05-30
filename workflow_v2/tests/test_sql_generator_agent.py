@@ -219,7 +219,7 @@ class TestSQLGeneratorAgent:
         
         # Verify SQL came from LLM response
         last_message = result.messages[-1].content
-        assert "<sql_generation>" in last_message or "```sql" in last_message
+        assert "<generation>" in last_message or "```sql" in last_message
         
         # Key point: Whatever SQL format LLM provided, agent stored it
         print("\n✓ Agent only prepared context and extracted LLM's SQL")

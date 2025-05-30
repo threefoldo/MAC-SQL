@@ -219,10 +219,9 @@ IMPORTANT: Your analysis will be stored in the query tree node and used by SQLGe
                 await self.tree_manager.update_node(current_node_id, {"intent": analysis.get("intent", "")})
                 
                 # Record the analysis in history
-                await self.history_manager.record_create(
-                    node_id=current_node_id,
-                    intent=analysis.get("intent", "")
-                )
+                node = await self.tree_manager.get_node(current_node_id)
+                if node:
+                    await self.history_manager.record_create(node)
                 
                 # If complex query, create sub-query nodes
                 if analysis.get("complexity") == "complex" and "decomposition" in analysis:
@@ -235,9 +234,6 @@ IMPORTANT: Your analysis will be stored in the query tree node and used by SQLGe
                         await self.tree_manager.set_current_node_id(first_child_id)
                         self.logger.debug(f"Complex query - set first child {first_child_id} as current node")
                 
-                # Store the analysis result in memory as well (for backwards compatibility)
-                analysis["root_node_id"] = current_node_id
-                # Analysis is stored in the query tree nodes, not in memory directly
                 
                 # User-friendly logging
                 self.logger.info("="*60)
@@ -299,9 +295,41 @@ IMPORTANT: Your analysis will be stored in the query tree node and used by SQLGe
         return '\n'.join(xml_parts)
     
     def _parse_analysis_xml(self, output: str) -> Optional[Dict[str, Any]]:
-        """Parse the analysis XML output using hybrid approach"""
+        """Parse the analysis XML output using hybrid approach with robust fallback"""
         # Use the hybrid parsing utility
         analysis = parse_xml_hybrid(output, 'analysis')
+        
+        # If parsing failed, try manual extraction for critical fields
+        if not analysis:
+            analysis = {}
+            
+            # Extract intent
+            intent_match = re.search(r'<intent>(.*?)</intent>', output, re.DOTALL)
+            if intent_match:
+                analysis["intent"] = intent_match.group(1).strip()
+            else:
+                # Fallback: look for intent in malformed tag
+                intent_match = re.search(r'<intent>(.*?)(?:<|$)', output, re.DOTALL)
+                if intent_match:
+                    analysis["intent"] = intent_match.group(1).strip()
+            
+            # Extract complexity
+            complexity_match = re.search(r'<complexity>(.*?)</complexity>', output, re.DOTALL)
+            if complexity_match:
+                analysis["complexity"] = complexity_match.group(1).strip()
+            else:
+                # Fallback: look for complexity in malformed tag
+                complexity_match = re.search(r'<complexity>(.*?)(?:<|$)', output, re.DOTALL)
+                if complexity_match:
+                    analysis["complexity"] = complexity_match.group(1).strip()
+            
+            # Extract tables if present (basic fallback)
+            tables_match = re.search(r'<tables>(.*?)</tables>', output, re.DOTALL)
+            if tables_match:
+                # Simple extraction - just get table names
+                table_names = re.findall(r'<table[^>]*name="([^"]*)"', tables_match.group(1))
+                if table_names:
+                    analysis["tables"] = [{"name": name} for name in table_names]
         
         # Handle fallback parsing for subqueries if needed
         if analysis and not analysis.get("decomposition", {}).get("subqueries") and SUBQ_PATTERN:
@@ -332,7 +360,7 @@ IMPORTANT: Your analysis will be stored in the query tree node and used by SQLGe
                     analysis["decomposition"] = {}
                 analysis["decomposition"]["subqueries"] = subqueries
         
-        return analysis
+        return analysis if analysis else None
     
     async def _create_subquery_nodes(self, parent_id: str, decomposition: Dict[str, Any]) -> None:
         """Create sub-query nodes in the tree"""
@@ -360,10 +388,9 @@ IMPORTANT: Your analysis will be stored in the query tree node and used by SQLGe
             await self.tree_manager.update_node(node_id, {"subqueryInfo": sq})
             
             # Record in history
-            await self.history_manager.record_create(
-                node_id=node_id,
-                intent=sq["intent"]
-            )
+            node = await self.tree_manager.get_node(node_id)
+            if node:
+                await self.history_manager.record_create(node)
             
             created_nodes.append(node_id)
             self.logger.debug(f"Created subquery node: {node_id}")
