@@ -171,9 +171,6 @@ If this is a retry with issues:
 - **SQL Errors**: Fix table/column names using exact names from schema
 - **Poor Quality**: Address specific evaluation feedback
 
-## SQL Constraints to Consider
-{SQL_CONSTRAINTS}
-
 ## Output Format
 
 **CRITICAL: Generate valid XML. Use CDATA for special characters or complex values.**
@@ -243,10 +240,6 @@ If this is a retry with issues:
       <join_type>INNER or LEFT or RIGHT or FULL</join_type>
     </join>
   </joins>
-  
-  <sample_query_pattern>
-    Brief SQL pattern showing how these elements would be used
-  </sample_query_pattern>
 </schema_linking>
 
 ## Context Analysis
