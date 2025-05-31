@@ -47,10 +47,19 @@ class SQLGeneratorAgent(BaseMemoryAgent):
         return f"""You are an expert SQL query generator for SQLite databases.
 
 ## CRITICAL RULES (Must Follow)
-1. **USE EXACT NAMES**: Use only table/column names from the provided mapping (CASE-SENSITIVE)
-2. **NO GUESSING**: Never modify or invent table/column names
-3. **FOLLOW CONSTRAINTS**: Apply all SQL generation constraints systematically
-4. **PREFER SIMPLICITY**: Use single-table queries when possible, avoid unnecessary joins
+1. **USE EXACT NAMES ONLY**: Use ONLY table/column names from the provided schema mapping - copy them EXACTLY (CASE-SENSITIVE)
+2. **NO GUESSING OR ASSUMPTIONS**: NEVER modify, invent, or assume table/column names - use ONLY what's provided in the mapping
+3. **SCHEMA VALIDATION**: Before generating SQL, verify that ALL table/column names exist in the provided mapping
+4. **NO FICTIONAL SCHEMAS**: NEVER use assumed names like "Schools", "Students", "TestScores" - use ONLY actual names from mapping
+5. **FOLLOW CONSTRAINTS**: Apply all SQL generation constraints systematically
+6. **PREFER SIMPLICITY**: Use single-table queries when possible, avoid unnecessary joins
+
+## SCHEMA VALIDATION CHECKPOINT
+Before writing any SQL:
+- Check that schema mapping is provided and contains actual table/column names
+- If mapping is empty or missing, REQUEST schema linking first - DO NOT proceed with assumptions
+- Verify EVERY table and column name in your SQL exists in the mapping
+- If you cannot find required schema elements, explain what's missing - DO NOT invent names
 
 ## Your Task
 Generate accurate SQL queries based on the provided node information. You handle THREE scenarios automatically:
@@ -70,6 +79,11 @@ Extract from the "current_node" JSON:
 - **sql**: Previous SQL (if this is a retry)
 - **executionResult**: Previous execution results and errors
 - **evidence**: Domain-specific knowledge
+
+**MANDATORY SCHEMA CHECK**:
+- If mapping is empty (empty dict), missing, or contains no table information: STOP and request schema linking
+- DO NOT proceed with assumed table/column names
+- Example error response: "Schema mapping is empty. Cannot generate SQL without actual table/column names from schema linking."
 
 **Data Type Formatting Guide**:
 - INTEGER/INT/BIGINT: Use unquoted numbers (e.g., 1, 42, -10)
@@ -296,10 +310,17 @@ For retries, explain what failed and what you changed."""
                         query_type=generation_result.get("query_type", "simple")
                     )
                     
-                    # Record in history
+                    # Record in history with attempt tracking
                     node = await self.tree_manager.get_node(node_id)
                     if node:
                         await self.history_manager.record_generate_sql(node)
+                        
+                        # Track attempt count for max attempts logic
+                        current_attempts = await self._get_node_attempt_count(node_id)
+                        self.logger.info(f"SQL generation attempt #{current_attempts} for node {node_id}")
+                        
+                        if current_attempts >= 3:
+                            self.logger.warning(f"Node {node_id} has reached maximum attempts ({current_attempts}). Will be marked complete by TaskStatusChecker.")
                     
                     # Basic logging
                     self.logger.info("="*60)
@@ -358,7 +379,21 @@ For retries, explain what failed and what you changed."""
             }
         return None
     
-    
+    async def _get_node_attempt_count(self, node_id: str) -> int:
+        """Get the attempt count for a node from its operation history."""
+        try:
+            operations = await self.history_manager.get_node_operations(node_id)
+            
+            # Count SQL generation attempts (specifically record_generate_sql calls)
+            sql_generation_attempts = 0
+            for op in operations:
+                if hasattr(op, 'operationType') and op.operationType == 'GENERATE_SQL':
+                    sql_generation_attempts += 1
+            
+            return sql_generation_attempts
+        except Exception as e:
+            self.logger.warning(f"Could not get attempt count for node {node_id}: {e}")
+            return 0
     
     async def _get_schema_xml(self) -> str:
         """Get the database schema in XML format"""

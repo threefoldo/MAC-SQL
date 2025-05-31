@@ -193,17 +193,29 @@ Example goals:
 - "Retry SQL generation fixing the column name error"
 - "Evaluate SQL results, check if totals match expected business logic"
 
+## Critical: Task Status Checker Usage
+**The orchestrator MUST rely on task_status_checker output to make all decisions**
+- Call task_status_checker ONCE to get status, then ACT on the result immediately
+- DO NOT call task_status_checker twice in a row - take action based on the first result
+- The status report tells you EXACTLY what needs to be done next
+- IMMEDIATELY after getting status report, call the appropriate tool based on CURRENT_STATUS:
+  - If CURRENT_STATUS = "needs_sql" → call sql_generator immediately
+  - If CURRENT_STATUS = "needs_eval" → call sql_evaluator immediately  
+  - If CURRENT_STATUS = "bad_sql" → call sql_generator with retry goal immediately
+  - If CURRENT_STATUS = "complete" and OVERALL_STATUS = "All nodes complete" → say TERMINATE
+
 ## Processing Workflow
 1. **Start**: Call task_status_checker with goal="check overall task status"
-2. **Interpret status** to determine current node and its needs
-3. **Call appropriate tool** with contextual goal based on:
-   - Current node status
-   - Tool dependencies (check if prerequisites met)
-   - Previous attempts/errors (if any)
-   - Tool call history (avoid consecutive duplicates)
-4. **Iterate** until OVERALL_STATUS indicates completion
+2. **Read CURRENT_STATUS from the status report**
+3. **Immediately take action** based on CURRENT_STATUS:
+   - "needs_sql" → call sql_generator (do NOT call task_status_checker again)
+   - "needs_eval" → call sql_evaluator (do NOT call task_status_checker again)
+   - "bad_sql" → call sql_generator with retry goal (do NOT call task_status_checker again)
+   - "complete" + "All nodes complete" → say TERMINATE
+4. **After any tool execution**: Check task_status_checker again for next action
+5. **Repeat**: Always act immediately on status reports, never call task_status_checker twice consecutively
 
-## Status-Based Actions
+## Status-Based Actions (from task_status_checker output)
 - **needs_schema** → schema_linker with goal="link schema for [node intent]"
 - **needs_analysis** → Check if schema exists (current/parent), then query_analyzer
 - **needs_sql** → Check if query analyzed AND schema exists, then sql_generator
@@ -220,6 +232,7 @@ Example goals:
 - **Consecutive tool calls detected**: Switch to different tool or check status
 
 ## Key Principles
+- Let task_status_checker guide all decisions
 - Tools automatically access full context (previous attempts, errors, feedback)
 - Respect tool dependencies: schema → analyzer → generator → evaluator
 - Track SQL generation attempts per node (max 2)
@@ -227,10 +240,12 @@ Example goals:
 - Parent nodes wait for child completion
 
 ## Termination
-Say "TERMINATE" only when:
-- TREE OVERVIEW shows X/X nodes complete (all done)
-- No PENDING nodes remain
-- OVERALL_STATUS confirms completion
+Say "TERMINATE" when task_status_checker reports:
+- OVERALL_STATUS: "All nodes complete" 
+- OR all nodes are marked as complete status in the tree
+- Do NOT continue processing when all nodes are complete
+
+**CRITICAL**: Look for "OVERALL_STATUS: All nodes complete" in the status report - this is the definitive termination signal.
 
 Begin by calling task_status_checker with goal="check overall task status".
         """,

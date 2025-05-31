@@ -35,15 +35,25 @@ class TaskStatusChecker(BaseTool):
     async def run(self, args: TaskStatusCheckerArgs, cancellation_token=None) -> str:
         """Navigate node tree, check all nodes, and report comprehensive status."""
         
+        self.logger.info("="*60)
+        self.logger.info("TASK STATUS CHECKER - Starting Analysis")
+        self.logger.info("="*60)
+        
         # 1. Check query tree  
         tree = await self.tree_manager.get_tree()
         if not tree or "nodes" not in tree or len(tree["nodes"]) == 0:
-            return "STATUS: No query tree found"
+            status = "STATUS: No query tree found"
+            self.logger.warning(status)
+            return status
         
         # 2. Analyze all nodes in the tree
         root_id = tree.get("rootId")
         if not root_id:
-            return "STATUS: No root node in tree"
+            status = "STATUS: No root node in tree"
+            self.logger.warning(status)
+            return status
+        
+        self.logger.info(f"Analyzing tree with {len(tree['nodes'])} nodes")
         
         # Get comprehensive status of all nodes
         node_statuses = await self._analyze_all_nodes(tree)
@@ -52,12 +62,19 @@ class TaskStatusChecker(BaseTool):
         current_node_id = await self._navigate_tree(tree, node_statuses, root_id)
         
         # 4. Generate comprehensive status report
-        return self._generate_tree_status_report(tree, node_statuses, current_node_id)
+        status_report = self._generate_tree_status_report(tree, node_statuses, current_node_id)
+        
+        self.logger.info("TASK STATUS REPORT:")
+        self.logger.info(status_report)
+        self.logger.info("="*60)
+        
+        return status_report
     
     async def _analyze_all_nodes(self, tree):
         """Analyze the status of all nodes in the tree."""
         node_statuses = {}
         
+        # First pass: analyze individual node status
         for node_id, node_data in tree["nodes"].items():
             # Check schema linking
             has_schema_linking = bool(node_data.get("schema_linking"))
@@ -74,9 +91,17 @@ class TaskStatusChecker(BaseTool):
             if evaluation:
                 quality = evaluation.get("result_quality", "").lower()
             
-            # Determine overall node status
+            # Check attempt count - get from node_history or initialize
+            attempt_count = await self._get_node_attempt_count(node_id)
+            max_attempts_reached = attempt_count >= 3
+            
+            # Determine initial node status
             if quality in ["excellent", "good"]:
                 status = "complete"
+            elif max_attempts_reached:
+                # Force completion after 3 attempts regardless of quality
+                status = "complete"
+                self.logger.info(f"Node {node_id} marked complete after {attempt_count} attempts (max reached)")
             elif has_execution and quality not in ["excellent", "good"]:
                 status = "bad_sql"
             elif has_sql and not has_execution:
@@ -92,8 +117,43 @@ class TaskStatusChecker(BaseTool):
                 "quality": quality,
                 "intent": node_data.get("intent", ""),
                 "children": node_data.get("childIds", []),
-                "parent": node_data.get("parentId")
+                "parent": node_data.get("parentId"),
+                "attempt_count": attempt_count,
+                "max_attempts_reached": max_attempts_reached
             }
+        
+        # Second pass: update parent node status based on children completion
+        for node_id, node_status in node_statuses.items():
+            children = node_status["children"]
+            if children and len(children) > 0:
+                # This is a parent node with children
+                # Check if all children are complete
+                all_children_complete = True
+                any_child_has_good_sql = False
+                
+                for child_id in children:
+                    if child_id in node_statuses:
+                        child_status = node_statuses[child_id]["status"]
+                        if child_status != "complete":
+                            all_children_complete = False
+                        if child_status == "complete":
+                            any_child_has_good_sql = True
+                    else:
+                        all_children_complete = False
+                
+                # If all children are complete, mark parent as complete and update tree
+                if all_children_complete and any_child_has_good_sql:
+                    if node_status["status"] in ["needs_sql", "needs_eval", "bad_sql"]:
+                        node_statuses[node_id]["status"] = "complete"
+                        self.logger.info(f"Marked parent node {node_id} as complete (all children complete)")
+                        
+                        # CRITICAL: Actually update the node in the tree with completion status
+                        await self.tree_manager.update_node(node_id, {"status": "complete"})
+                        
+                        # If this is the root node, trigger SQL combination from children
+                        if not node_status["parent"]:
+                            await self._combine_child_sqls_for_root(node_id, children, tree)
+                            self.logger.info(f"Root node {node_id} SQL combination completed")
         
         return node_statuses
     
@@ -166,7 +226,7 @@ class TaskStatusChecker(BaseTool):
         return current_node_id  # No more nodes to process
     
     def _generate_tree_status_report(self, tree, node_statuses, current_node_id):
-        """Generate comprehensive tree status report."""
+        """Generate comprehensive tree status report including current node content."""
         total_nodes = len(node_statuses)
         complete_nodes = sum(1 for s in node_statuses.values() if s["status"] == "complete")
         
@@ -184,14 +244,104 @@ class TaskStatusChecker(BaseTool):
             f"CURRENT_NODE: {current_node_id}"
         ]
         
-        # Add current node details
+        # Add detailed current node content
         current_status = node_statuses.get(current_node_id, {})
-        if current_status:
-            intent = current_status["intent"][:60] + "..." if len(current_status["intent"]) > 60 else current_status["intent"]
+        current_node_data = tree["nodes"].get(current_node_id, {})
+        
+        if current_status and current_node_data:
+            # Show full intent without truncation
+            intent = current_status["intent"]
             report_lines.extend([
                 f"CURRENT_STATUS: {current_status['status']}",
                 f"CURRENT_INTENT: {intent}"
             ])
+            
+            # Add current node content details
+            report_lines.append("CURRENT_NODE_CONTENT:")
+            
+            # Show attempt count for debugging
+            attempt_count = current_status.get("attempt_count", 0)
+            max_attempts_reached = current_status.get("max_attempts_reached", False)
+            report_lines.append(f"  - Attempts: {attempt_count}/3 {'(MAX REACHED)' if max_attempts_reached else ''}")
+            
+            # Schema linking status with full details
+            has_schema = current_status["has_schema_linking"]
+            schema_info = "none"
+            if has_schema:
+                schema_linking = current_node_data.get("schema_linking", {})
+                # Show full schema linking information
+                selected_tables = schema_linking.get("selected_tables", {})
+                if isinstance(selected_tables, dict) and "table" in selected_tables:
+                    tables = selected_tables["table"]
+                    if isinstance(tables, list):
+                        table_names = [t.get("name", "unknown") for t in tables if isinstance(t, dict)]
+                        schema_info = f"tables: {', '.join(table_names)}"
+                        # Add column information if available
+                        for table in tables:
+                            if isinstance(table, dict) and "columns" in table:
+                                columns = table.get("columns", {})
+                                if isinstance(columns, dict) and "column" in columns:
+                                    col_list = columns["column"]
+                                    if isinstance(col_list, list):
+                                        col_names = [c.get("name", "unknown") for c in col_list if isinstance(c, dict)]
+                                        schema_info += f"; {table.get('name', 'table')} columns: {', '.join(col_names)}"
+                    elif isinstance(tables, dict):
+                        schema_info = f"table: {tables.get('name', 'unknown')}"
+            report_lines.append(f"  - Schema linked: {has_schema} ({schema_info})")
+            
+            # SQL generation status with full SQL
+            has_sql = current_status["has_sql"]
+            sql_info = "none"
+            if has_sql:
+                generation = current_node_data.get("generation", {})
+                sql = generation.get("sql") or current_node_data.get("sql")
+                if sql:
+                    sql_info = str(sql).strip().replace('\n', ' ')  # Show full SQL without truncation
+            report_lines.append(f"  - SQL generated: {has_sql}")
+            if has_sql and sql_info != "none":
+                report_lines.append(f"    SQL: {sql_info}")
+            
+            # Evaluation status with full details
+            has_execution = current_status["has_execution"]
+            quality = current_status["quality"]
+            exec_info = "none"
+            if has_execution:
+                evaluation = current_node_data.get("evaluation", {})
+                exec_result = evaluation.get("execution_result", {})
+                if exec_result:
+                    row_count = exec_result.get("row_count", 0)
+                    success = exec_result.get("status") == "success"
+                    exec_info = f"{row_count} rows, {'success' if success else 'error'}"
+                    # Add error details if present
+                    if not success and exec_result.get("error"):
+                        exec_info += f" - {exec_result.get('error')}"
+            report_lines.append(f"  - Execution: {has_execution} ({exec_info}), Quality: {quality}")
+            
+            # Show full errors and suggestions if in bad_sql state
+            if current_status["status"] == "bad_sql":
+                evaluation = current_node_data.get("evaluation", {})
+                issues = evaluation.get("issues", {})
+                suggestions = evaluation.get("suggestions", {})
+                if issues or suggestions:
+                    report_lines.append("  - Issues detected:")
+                    if isinstance(issues, dict) and "issue" in issues:
+                        issue_list = issues["issue"] if isinstance(issues["issue"], list) else [issues["issue"]]
+                        for issue in issue_list:  # Show all issues without truncation
+                            if isinstance(issue, dict):
+                                desc = issue.get("description", "")
+                                severity = issue.get("severity", "unknown")
+                                report_lines.append(f"    * [{severity}] {desc}")
+                    
+                    # Show suggestions without truncation
+                    if isinstance(suggestions, dict) and "suggestion" in suggestions:
+                        suggestion_list = suggestions["suggestion"] if isinstance(suggestions["suggestion"], list) else [suggestions["suggestion"]]
+                        if suggestion_list:
+                            report_lines.append("  - Suggestions:")
+                            for suggestion in suggestion_list:
+                                if isinstance(suggestion, str):
+                                    report_lines.append(f"    * {suggestion}")
+                                elif isinstance(suggestion, dict) and "text" in suggestion:
+                                    report_lines.append(f"    * {suggestion['text']}")
         
         # Overall completion status
         if complete_nodes == total_nodes:
@@ -200,6 +350,59 @@ class TaskStatusChecker(BaseTool):
             report_lines.append("OVERALL_STATUS: Processing in progress")
         
         return "\n".join(report_lines)
+    
+    async def _get_node_attempt_count(self, node_id: str) -> int:
+        """Get the attempt count for a node from its operation history."""
+        try:
+            from node_history_manager import NodeHistoryManager
+            history_manager = NodeHistoryManager(self.memory)
+            operations = await history_manager.get_node_operations(node_id)
+            
+            # Count SQL generation attempts (record_generate_sql calls)
+            sql_generation_attempts = 0
+            for op in operations:
+                if hasattr(op, 'operationType') and op.operationType == 'GENERATE_SQL':
+                    sql_generation_attempts += 1
+                elif hasattr(op, 'operationType') and op.operationType in ['CREATE', 'UPDATE']:
+                    # Fallback: check if operation details contain SQL generation info
+                    if hasattr(op, 'operationDetails') and 'sql' in str(op.operationDetails).lower():
+                        sql_generation_attempts += 1
+            
+            return sql_generation_attempts
+        except Exception as e:
+            self.logger.warning(f"Could not get attempt count for node {node_id}: {e}")
+            return 0
+    
+    async def _combine_child_sqls_for_root(self, root_id: str, children: list, tree: dict) -> None:
+        """Combine child node SQLs into a final SQL for the root node."""
+        try:
+            child_sqls = []
+            for child_id in children:
+                child_node = tree["nodes"].get(child_id, {})
+                child_sql = child_node.get("generation", {}).get("sql") or child_node.get("sql")
+                if child_sql:
+                    child_sqls.append(child_sql)
+            
+            if child_sqls:
+                # For now, use the first child's SQL as the root SQL
+                # In a more sophisticated implementation, this would intelligently combine them
+                combined_sql = child_sqls[0] if len(child_sqls) == 1 else child_sqls[0]
+                
+                # Update root node with combined SQL
+                await self.tree_manager.update_node_sql(root_id, combined_sql)
+                
+                # Mark as having generation result
+                generation_result = {
+                    "query_type": "complex",
+                    "sql": combined_sql,
+                    "explanation": f"Combined result from {len(child_sqls)} child queries",
+                    "considerations": "SQL generated by combining child node results"
+                }
+                await self.tree_manager.update_node(root_id, {"generation": generation_result})
+                
+                self.logger.info(f"Combined SQL for root node {root_id}: {combined_sql}")
+        except Exception as e:
+            self.logger.error(f"Error combining child SQLs for root {root_id}: {e}", exc_info=True)
     
     def get_tool(self):
         """Return self as the tool instance for use with agents"""

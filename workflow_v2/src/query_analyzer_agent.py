@@ -49,9 +49,14 @@ class QueryAnalyzerAgent(BaseMemoryAgent):
         return f"""You are a query analyzer for text-to-SQL conversion. Your job is to:
 
 1. Analyze the user's query to understand their intent
-2. Identify which tables and columns are likely needed
+2. Identify which tables and columns are likely needed (but use ONLY actual names from schema)
 3. Determine query complexity
 4. For complex queries, decompose them into simpler sub-queries
+
+## CRITICAL RULES (Must Follow)
+1. **USE ACTUAL NAMES ONLY**: When referencing tables/columns, use ONLY names that exist in the provided database schema
+2. **NO ASSUMPTIONS**: NEVER assume table/column names like "Students", "Schools", "TestScores" - use ONLY actual schema names
+3. **SCHEMA DEPENDENCY**: Your analysis should be based on the actual database schema provided, not generic assumptions
 
 ## Schema-Informed Analysis
 
@@ -60,8 +65,12 @@ If schema analysis is provided (from SchemaLinker), use it to inform your decisi
 - **Column Awareness**: Consider which columns were identified as important
 - **Relationship Understanding**: Use identified foreign key relationships for decomposition
 - **Confidence Boost**: Schema analysis increases confidence in table/column choices
+- **NAME VALIDATION**: Ensure all table/column references use exact names from the schema
 
-If no schema analysis is available, perform standard analysis based on query text and evidence.
+If no schema analysis is available, perform standard analysis based on query text and evidence, but:
+- Reference only tables/columns that exist in the provided database schema
+- Do not assume or invent table/column names
+- If you cannot identify specific tables/columns, describe the data needs generically
 
 ## Complexity Determination
 
@@ -84,11 +93,12 @@ If no schema analysis is available, perform standard analysis based on query tex
 ## Table Identification Strategy
 
 When analyzing which tables are needed:
-1. **First priority**: Use schema analysis results if available
-2. Look for entity mentions in the query (e.g., "students" → student table)
-3. Use evidence to understand domain-specific terminology and mappings
-4. Consider foreign key relationships for joins
-5. Include tables needed for filtering even if not in SELECT
+1. **First priority**: Use schema analysis results if available (with actual table names)
+2. **ONLY use actual table names**: Look for entity mentions but map them to ACTUAL table names from the provided schema
+3. **NO GENERIC NAMES**: Never use assumed names like "students", "schools", "courses" - use actual schema table names
+4. Use evidence to understand domain-specific terminology and mappings to ACTUAL schema elements
+5. Consider foreign key relationships for joins (using actual table/column names)
+6. Include tables needed for filtering even if not in SELECT (using actual names)
 
 ## Decomposition Guidelines
 
@@ -119,11 +129,13 @@ Use the provided evidence exactly as given to:
 
 ## Output Format
 
+**VALIDATION REQUIREMENT**: Before generating output, verify that all table names in your <tables> section exist in the provided database schema.
+
 <analysis>
   <intent>Clear, concise description of what the user wants to find</intent>
   <complexity>simple|complex</complexity>
   <tables>
-    <table name="table_name" purpose="why this table is needed"/>
+    <table name="ACTUAL_table_name_from_schema" purpose="why this table is needed"/>
   </tables>
   <decomposition>
     <subquery id="1">
@@ -363,9 +375,20 @@ IMPORTANT: Your analysis will be stored in the query tree node and used by SQLGe
         return analysis if analysis else None
     
     async def _create_subquery_nodes(self, parent_id: str, decomposition: Dict[str, Any]) -> None:
-        """Create sub-query nodes in the tree"""
+        """Create sub-query nodes in the tree with inherited schema information"""
         # Handle both 'subqueries' and 'subquery' keys from XML parsing
         subqueries = decomposition.get("subqueries", decomposition.get("subquery", []))
+        
+        # Get parent node's schema linking information for inheritance
+        parent_node = await self.tree_manager.get_node(parent_id)
+        parent_schema_linking = None
+        if parent_node and hasattr(parent_node, 'schema_linking') and parent_node.schema_linking:
+            parent_schema_linking = parent_node.schema_linking
+        elif parent_node:
+            # Try to get schema_linking from the raw node data
+            parent_data = await self.tree_manager.get_tree()
+            if parent_data and "nodes" in parent_data and parent_id in parent_data["nodes"]:
+                parent_schema_linking = parent_data["nodes"][parent_id].get("schema_linking")
         
         # Create nodes for each subquery
         created_nodes = []
@@ -387,6 +410,24 @@ IMPORTANT: Your analysis will be stored in the query tree node and used by SQLGe
             # Store the subquery info directly in the node
             await self.tree_manager.update_node(node_id, {"subqueryInfo": sq})
             
+            # Inherit schema linking information from parent if available
+            if parent_schema_linking:
+                await self.tree_manager.update_node(node_id, {"schema_linking": parent_schema_linking})
+                self.logger.info(f"Inherited schema linking from parent {parent_id} to child {node_id}")
+                
+                # Log inherited schema information for debugging
+                if isinstance(parent_schema_linking, dict) and "selected_tables" in parent_schema_linking:
+                    selected_tables = parent_schema_linking["selected_tables"]
+                    if isinstance(selected_tables, dict) and "table" in selected_tables:
+                        tables = selected_tables["table"]
+                        if isinstance(tables, list):
+                            table_names = [t.get("name", "unknown") for t in tables if isinstance(t, dict)]
+                            self.logger.info(f"  Inherited tables: {', '.join(table_names)}")
+                        elif isinstance(tables, dict):
+                            self.logger.info(f"  Inherited table: {tables.get('name', 'unknown')}")
+            else:
+                self.logger.warning(f"No schema linking found in parent {parent_id} to inherit")
+            
             # Record in history
             node = await self.tree_manager.get_node(node_id)
             if node:
@@ -394,6 +435,10 @@ IMPORTANT: Your analysis will be stored in the query tree node and used by SQLGe
             
             created_nodes.append(node_id)
             self.logger.debug(f"Created subquery node: {node_id}")
+        
+        # Log summary of created nodes
+        if created_nodes:
+            self.logger.info(f"Created {len(created_nodes)} child nodes with inherited schema information")
         
     
     async def get_analysis_summary(self) -> Dict[str, Any]:
