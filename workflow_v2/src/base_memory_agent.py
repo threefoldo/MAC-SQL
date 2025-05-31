@@ -58,7 +58,7 @@ class BaseMemoryAgent(ABC):
         default_llm_config = {
             "model_name": "gpt-4o",
             "temperature": 0.1,
-            "timeout": 120
+            "timeout": 300
         }
         
         # Merge user config with defaults

@@ -24,7 +24,7 @@ class SQLExecutor:
         self.data_path = data_path
         self.dataset_name = dataset_name
     
-    @func_set_timeout(120)  # 2-minute timeout
+    @func_set_timeout(300)  # 5-minute timeout
     def execute_sql(self, sql: str, db_id: str) -> Dict[str, Any]:
         """
         Execute a SQL query against the database.
@@ -134,7 +134,7 @@ class SQLExecutor:
         except FunctionTimedOut:
             return {
                 "sql": str(sql),
-                "sqlite_error": "Execution timed out (>120 seconds)",
+                "sqlite_error": "Execution timed out (>300 seconds)",
                 "exception_class": "FunctionTimedOut", 
                 "timeout": True,
                 "success": False,

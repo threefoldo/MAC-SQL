@@ -7,7 +7,20 @@ This module provides a complete text-to-SQL tree orchestrator using all 4 specia
 - SQLGeneratorAgent: Generates SQL from linked schema
 - SQLEvaluatorAgent: Executes and evaluates SQL results
 
-The tree processing is orchestrated by a coordinator agent that ensures correct SQL generation for all nodes.
+The text-to-sql task is represented in a tree, the root node represent the initial user query. 
+If it's simple, then there is only one node. If it's complex, it will be decomposed first, then 
+process the simpler child nodes. The generated SQL of the parent node is the combination of the 
+SQL of children nodes. TaskStatusChecker will report the overall status by navigating the complete 
+tree. Orchestrator will based on that status report to decide how to process each node. 
+
+There are 4 tools in total: 
+- schema_linker (select which tables and columns will be used in the SQL)
+- query_analyzer (understand the intent of query, give hints for SQL generation)
+- sql_generator (generate SQL based on all available information) 
+- sql_evaluator (execute the SQL and analyze the result, give suggestions if the SQL needs improvement)
+
+There is no order of these tools, just call them when necessary, until TaskStatusChecker report 
+all nodes are successfully processed (with good SQLs).
 """
 
 import os
@@ -35,10 +48,10 @@ from sql_generator_agent import SQLGeneratorAgent
 from sql_evaluator_agent import SQLEvaluatorAgent
 from task_status_checker import TaskStatusChecker
 
-# Memory types
+# Memory types - updated imports based on actual content
 from memory_content_types import (
     TaskContext, QueryNode, NodeStatus, TaskStatus,
-    TableSchema, ColumnInfo, ExecutionResult
+    TableSchema, ColumnInfo, ExecutionResult, NodeOperation
 )
 
 # AutoGen components
@@ -81,7 +94,7 @@ class TextToSQLTreeOrchestrator:
         self.llm_config = llm_config or {
             "model_name": "gpt-4o",
             "temperature": 0.1,
-            "timeout": 60
+            "timeout": 300
         }
         
         # Initialize memory and managers
@@ -141,16 +154,94 @@ class TextToSQLTreeOrchestrator:
         )
         
         coordinator = AssistantAgent(
-            name="orchestrator", 
-            system_message="""You have 5 tools available: task_status_checker, query_analyzer, schema_linker, sql_generator, sql_evaluator.
+            name="orchestrator",
+            system_message="""You are an orchestrator for a tree-based text-to-SQL workflow system with context-aware processing.
 
-RULE: Always call task_status_checker first to check current state.
+## System Overview
+- User queries are represented as a tree structure in shared memory
+- Simple queries = single root node
+- Complex queries = root node with decomposed child nodes
+- Parent node SQL = combination of child node SQLs
+- Each node maintains context including previous attempts, errors, and feedback
+- Your goal: Process all nodes until all have successful SQLs
 
-The task_status_checker will tell you which tool to call next.""",
+## Available Tools
+1. **schema_linker** - Identifies relevant tables/columns for the current node
+2. **query_analyzer** - Understands query intent and decomposes complex queries into subtrees
+3. **sql_generator** - Generates SQL based on linked schema and query analysis
+4. **sql_evaluator** - Executes SQL and analyzes results, suggests improvements
+5. **task_status_checker** - Reports tree status and next required action
+
+## Tool Dependencies & Constraints
+- **query_analyzer** REQUIRES: Schema from current node OR parent node
+- **sql_generator** REQUIRES: Output from query_analyzer AND schema (current/parent node)
+- **sql_evaluator** REQUIRES: Existing SQL in current node (skip if no SQL exists)
+- **sql_generator** LIMIT: Maximum 2 attempts per node (for easy fixes only)
+- **NEVER call same tool twice consecutively on same node** (especially schema_linker and sql_evaluator)
+
+## Tool Parameters
+All tools accept a **"goal"** parameter that specifies the expected action. The goal should be:
+- Contextual to the current node's state and needs
+- May include summary of previous tool outputs
+- May reference errors or feedback from prior attempts
+- Adapted based on the node's current status
+
+Example goals:
+- "Link schema for customer orders query, focusing on date filters"
+- "Analyze query intent using linked schema information"
+- "Generate SQL based on analyzed query structure and schema"
+- "Retry SQL generation fixing the column name error"
+- "Evaluate SQL results, check if totals match expected business logic"
+
+## Processing Workflow
+1. **Start**: Call task_status_checker with goal="check overall task status"
+2. **Interpret status** to determine current node and its needs
+3. **Call appropriate tool** with contextual goal based on:
+   - Current node status
+   - Tool dependencies (check if prerequisites met)
+   - Previous attempts/errors (if any)
+   - Tool call history (avoid consecutive duplicates)
+4. **Iterate** until OVERALL_STATUS indicates completion
+
+## Status-Based Actions
+- **needs_schema** → schema_linker with goal="link schema for [node intent]"
+- **needs_analysis** → Check if schema exists (current/parent), then query_analyzer
+- **needs_sql** → Check if query analyzed AND schema exists, then sql_generator
+- **needs_eval** → Check if SQL exists, then sql_evaluator (skip if no SQL)
+- **bad_sql** → 
+  - If first failure: sql_generator with goal addressing specific error
+  - If second failure: Consider alternative approach or escalate
+
+## Error Handling
+- **No schema for analysis**: Check parent node for schema inheritance
+- **No query analysis for SQL generation**: Run query_analyzer first
+- **SQL generation failed twice**: Mark node as requiring manual intervention
+- **No SQL for evaluation**: Skip evaluator, check why SQL is missing
+- **Consecutive tool calls detected**: Switch to different tool or check status
+
+## Key Principles
+- Tools automatically access full context (previous attempts, errors, feedback)
+- Respect tool dependencies: schema → analyzer → generator → evaluator
+- Track SQL generation attempts per node (max 2)
+- Avoid tool repetition patterns
+- Parent nodes wait for child completion
+
+## Termination
+Say "TERMINATE" only when:
+- TREE OVERVIEW shows X/X nodes complete (all done)
+- No PENDING nodes remain
+- OVERALL_STATUS confirms completion
+
+Begin by calling task_status_checker with goal="check overall task status".
+        """,
             model_client=coordinator_client,
-            tools=[self.query_analyzer.get_tool(), self.schema_linker.get_tool(), 
-                   self.sql_generator.get_tool(), self.sql_evaluator.get_tool(),
-                   self.task_status_checker.get_tool()]
+            tools=[
+                self.schema_linker.get_tool(),
+                self.query_analyzer.get_tool(), 
+                self.sql_generator.get_tool(), 
+                self.sql_evaluator.get_tool(),
+                self.task_status_checker.get_tool()
+            ]
         )
         
         return coordinator
@@ -206,10 +297,10 @@ The task_status_checker will tell you which tool to call next.""",
     
     async def _process_with_orchestrator_agent(self) -> Dict[str, Any]:
         """
-        Process query using orchestrator agent that builds feedback loops.
+        Process query using orchestrator agent.
         
-        The orchestrator agent makes decisions about which agents to call
-        and constructs feedback loops to achieve good SQL results.
+        Simple orchestration: just run the agent, log tool calls, count steps, and check for TERMINATE.
+        No business logic - let the orchestrator and tools handle all the workflow decisions.
         """
         if not self.coordinator:
             self.coordinator = self._create_coordinator()
@@ -221,55 +312,58 @@ The task_status_checker will tell you which tool to call next.""",
             termination_condition=termination_condition
         )
         
-        # Initial instruction for state machine operation  
-        start_instruction = """You must call task_status_checker first with goal=""."""
-
-        # Run the orchestrator with step and time control
-        self.logger.info("Starting orchestrator agent feedback loop construction")
+        # Run the orchestrator
+        start_instruction = "Process the text-to-SQL workflow using shared memory"
+        self.logger.info("Starting orchestrator workflow...")
         stream = team.run_stream(task=start_instruction)
         
-        # Process messages with loop control
+        # Simple message processing - just log tool calls and count steps
         step_count = 0
-        max_steps = 50  # Step limit
+        max_steps = self.max_steps
         start_time = asyncio.get_event_loop().time()
-        time_limit = 300  # 5 minutes time limit
-        messages = []
+        time_limit = 600  # 10 minutes
+        workflow_complete = False
         
         async for message in stream:
-            messages.append(message)
             current_time = asyncio.get_event_loop().time()
             
             # Process orchestrator messages
             if hasattr(message, 'source') and message.source == 'orchestrator':
                 step_count += 1
                 
-                # Check step limit
+                # Safety limits
                 if step_count >= max_steps:
-                    self.logger.warning(f"Reached step limit ({max_steps}). Terminating orchestrator.")
+                    self.logger.warning(f"Reached maximum steps ({max_steps}). Stopping.")
                     break
                 
-                # Check time limit
                 if current_time - start_time >= time_limit:
-                    self.logger.warning(f"Reached time limit ({time_limit}s). Terminating orchestrator.")
+                    self.logger.warning(f"Reached time limit ({time_limit}s). Stopping.")
                     break
                 
                 if hasattr(message, 'content'):
-                    content = str(message.content) if message.content else ""
-                    self.logger.debug(f"Orchestrator step {step_count}: {content[:100]}...")
+                    if isinstance(message.content, list) and len(message.content) > 0:
+                        # Tool calls - just log the tool name and arguments
+                        for tool_call in message.content:
+                            if hasattr(tool_call, 'name'):
+                                tool_name = tool_call.name
+                                tool_args = getattr(tool_call, 'arguments', {})
+                                self.logger.info(f"[Step {step_count}] Calling: {tool_name} with args: {tool_args}")
                     
-                    # Check for termination
-                    if "TERMINATE" in content:
-                        self.logger.info(f"Orchestrator completed successfully after {step_count} steps")
-                        break
+                    elif isinstance(message.content, str):
+                        # Check for termination
+                        if "TERMINATE" in str(message.content):
+                            workflow_complete = True
+                            self.logger.info(f"[Step {step_count}] ✅ WORKFLOW COMPLETE")
+                            break
         
-        # Log completion status
+        # Log completion
         total_time = asyncio.get_event_loop().time() - start_time
-        if step_count >= max_steps:
-            self.logger.error(f"Orchestrator stopped due to step limit ({max_steps} steps)")
-        elif total_time >= time_limit:
-            self.logger.error(f"Orchestrator stopped due to time limit ({time_limit}s)")
+        if workflow_complete:
+            self.logger.info("WORKFLOW COMPLETED SUCCESSFULLY")
         else:
-            self.logger.info(f"Orchestrator completed in {step_count} steps, {total_time:.1f}s")
+            self.logger.warning("WORKFLOW STOPPED (may not have completed)")
+        
+        self.logger.info(f"Total execution time: {total_time:.1f}s, Steps: {step_count}")
         
         # Get final results
         return await self._get_tree_results()
@@ -349,48 +443,44 @@ The task_status_checker will tell you which tool to call next.""",
             print(f"  Intent: {node_data.get('intent', 'N/A')}")
             print(f"  Status: {node_data.get('status', 'N/A')}")
             
-            # Show mapping if available (check both new and old field names)
-            mapping = node_data.get('schema_linking', node_data.get('mapping'))
-            if mapping:
-                # Handle new structure
-                if 'selected_tables' in mapping:
-                    tables_data = mapping.get('selected_tables', {})
-                    if isinstance(tables_data, dict) and 'table' in tables_data:
-                        table_info = tables_data['table']
-                        if isinstance(table_info, dict):
-                            print(f"  Tables: {table_info.get('name', 'unknown')}")
-                        elif isinstance(table_info, list):
-                            table_names = [t.get('name', 'unknown') for t in table_info if isinstance(t, dict)]
-                            print(f"  Tables: {', '.join(table_names)}")
-                # Handle old structure
-                elif mapping.get('tables'):
-                    tables = [t['name'] for t in mapping['tables']]
-                    print(f"  Tables: {', '.join(tables)}")
+            # Show schema linking info if available
+            schema_linking = node_data.get('schema_linking', {})
+            if schema_linking:
+                # Extract table names from schema linking structure
+                table_names = []
+                if 'selected_tables' in schema_linking:
+                    selected_tables = schema_linking['selected_tables']
+                    if isinstance(selected_tables, dict) and 'table' in selected_tables:
+                        tables = selected_tables['table']
+                        if isinstance(tables, list):
+                            table_names = [t.get('name', 'unknown') for t in tables if isinstance(t, dict)]
+                        elif isinstance(tables, dict):
+                            table_names = [tables.get('name', 'unknown')]
+                if table_names:
+                    print(f"  Tables: {', '.join(table_names)}")
             
-            # Show SQL if available (from generation field)
-            sql = None
-            if node_data.get('generation') and isinstance(node_data['generation'], dict):
-                sql = node_data['generation'].get('sql')
-            elif node_data.get('sql'):  # Fallback to old field
-                sql = node_data.get('sql')
+            # Show SQL from generation field
+            generation = node_data.get('generation', {})
+            if generation and isinstance(generation, dict):
+                sql = generation.get('sql')
+                if sql:
+                    sql_preview = str(sql).strip().replace('\n', ' ')[:100]
+                    print(f"  SQL: {sql_preview}..." if len(sql_preview) == 100 else f"  SQL: {sql_preview}")
             
-            if sql:
-                sql_preview = str(sql).strip().replace('\n', ' ')[:100]
-                print(f"  SQL: {sql_preview}..." if len(sql_preview) == 100 else f"  SQL: {sql_preview}")
-            
-            # Show execution result if available
-            if 'executionResult' in node_data and node_data['executionResult']:
-                result = node_data['executionResult']
-                print(f"  Execution: {result.get('rowCount', 0)} rows")
-                if result.get('error'):
-                    print(f"  Error: {result['error']}")
-            
-            # Show analysis quality
-            analysis_key = f"node_{node_id}_analysis"
-            analysis = await self.memory.get(analysis_key)
-            if analysis:
-                quality = analysis.get("result_quality", "N/A")
-                print(f"  Quality: {quality.upper()}")
+            # Show execution result from evaluation field
+            evaluation = node_data.get('evaluation', {})
+            if evaluation and isinstance(evaluation, dict):
+                exec_result = evaluation.get('execution_result', {})
+                if exec_result:
+                    row_count = exec_result.get('row_count', 0)
+                    print(f"  Execution: {row_count} rows")
+                    if exec_result.get('error'):
+                        print(f"  Error: {exec_result['error']}")
+                
+                # Show evaluation quality
+                quality = evaluation.get('result_quality', 'N/A')
+                if quality != 'N/A':
+                    print(f"  Quality: {quality.upper()}")
     
     async def display_final_results(self) -> None:
         """Display the final SQL from the root node."""
@@ -413,26 +503,33 @@ The task_status_checker will tell you which tool to call next.""",
             # Get root node for additional info
             tree = results.get("query_tree", {})
             root_id = tree.get("rootId")
-            if root_id and root_id in results["nodes"]:
-                root_node = results["nodes"][root_id]
+            if root_id and root_id in tree.get("nodes", {}):
+                root_node_data = tree["nodes"][root_id]
                 
-                # Show execution result if available
-                if root_node.get('execution_result'):
-                    exec_result = root_node['execution_result']
-                    print(f"\nExecution Result:")
-                    print(f"  Status: {exec_result.get('status', 'N/A')}")
-                    print(f"  Rows returned: {exec_result.get('rowCount', 0)}")
+                # Show execution result from evaluation field
+                evaluation = root_node_data.get('evaluation', {})
+                if evaluation and isinstance(evaluation, dict):
+                    exec_result = evaluation.get('execution_result', {})
+                    if exec_result:
+                        print(f"\nExecution Result:")
+                        print(f"  Status: {exec_result.get('status', 'N/A')}")
+                        print(f"  Rows returned: {exec_result.get('row_count', 0)}")
+                        
+                        if exec_result.get('data') and len(exec_result['data']) > 0:
+                            print(f"\nData (first 5 rows):")
+                            for i, row in enumerate(exec_result['data'][:5]):
+                                print(f"  {row}")
                     
-                    if exec_result.get('data') and len(exec_result['data']) > 0:
-                        print(f"\nData (first 5 rows):")
-                        for i, row in enumerate(exec_result['data'][:5]):
-                            print(f"  {row}")
-                
-                # Show quality assessment if available
-                if root_node.get('analysis'):
-                    analysis = root_node['analysis']
-                    print(f"\nQuality Assessment:")
-                    print(f"  Result quality: {analysis.get('result_quality', 'N/A').upper()}")
+                    # Show quality assessment
+                    quality = evaluation.get('result_quality', 'N/A')
+                    if quality != 'N/A':
+                        print(f"\nQuality Assessment:")
+                        print(f"  Result quality: {quality.upper()}")
+                        
+                        # Show summary if available
+                        summary = evaluation.get('result_summary')
+                        if summary:
+                            print(f"  Summary: {summary[:200]}..." if len(summary) > 200 else f"  Summary: {summary}")
         else:
             print("\nNo final SQL available. Root node has not generated SQL yet.")
     
@@ -463,11 +560,30 @@ async def run_text_to_sql(query: str,
     # Load environment variables
     load_dotenv()
     
-    # Set up logging
-    logging.basicConfig(level=logging.INFO, 
-                       format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    logging.getLogger('autogen_core').setLevel(logging.WARNING)
-    logging.getLogger('httpx').setLevel(logging.WARNING)
+    # Set up clean logging - minimal noise, focus on workflow
+    logging.basicConfig(
+        level=logging.WARNING,  # Higher level to reduce noise
+        format='%(name)s - %(levelname)s - %(message)s'  # Simpler format
+    )
+    
+    # Only show agent-specific logs at INFO level
+    agent_loggers = [
+        'QueryAnalyzerAgent', 'SchemaLinkerAgent', 
+        'SQLGeneratorAgent', 'SQLEvaluatorAgent', 'TaskStatusChecker',
+        'TextToSQLTreeOrchestrator'
+    ]
+    
+    for logger_name in agent_loggers:
+        logging.getLogger(logger_name).setLevel(logging.INFO)
+    
+    # Silence very noisy libraries completely
+    noisy_loggers = [
+        'autogen_core', 'autogen_agentchat', 'httpx', 'openai', 
+        'httpcore', 'httpcore.connection', 'httpcore.http11'
+    ]
+    
+    for logger_name in noisy_loggers:
+        logging.getLogger(logger_name).setLevel(logging.ERROR)
     
     # Initialize tree orchestrator
     tables_json_path = str(Path(data_path) / "dev_tables.json")
