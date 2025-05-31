@@ -97,6 +97,7 @@ class SchemaLinkerAgent(BaseMemoryAgent):
 4. **VERIFY BEFORE OUTPUT**: Double-check that EVERY table and column name in your output exists in the provided schema
 5. **SINGLE TABLE PREFERENCE**: Always try single-table solutions first before considering joins
 6. **COLUMN DISCOVERY**: Show all potentially relevant columns with sample data before selecting the best ones
+7. **UNIVERSAL SQL QUALITY ALIGNMENT**: Select columns that enable minimal, precise SQL output matching query intent
 
 ## SCHEMA VALIDATION CHECKPOINT
 Before generating your final output:
@@ -105,8 +106,15 @@ Before generating your final output:
 - Use exact capitalization and spelling as shown in schema
 - If you cannot find a table/column, say so explicitly - DO NOT create fictional names
 
+## UNIVERSAL SQL QUALITY FRAMEWORK ALIGNMENT
+When selecting columns, consider the final SQL quality requirements:
+- **Count queries** ("How many...") → Need only columns for counting logic, avoid extra descriptive columns
+- **List queries** ("List all X") → Need only the columns being listed, no additional "helpful" information  
+- **Calculation queries** ("What is the average...") → Need only columns for the calculation, single result expected
+- **Lookup queries** ("What is the X of Y") → Need only the specific requested information columns
+
 ## Your Task
-**PRIMARY GOAL**: Analyze the FULL user query and find ALL relevant schema elements that could be used to answer it.
+**PRIMARY GOAL**: Analyze the user query and find the MINIMAL ESSENTIAL schema elements needed to answer it precisely.
 
 Use a comprehensive approach to link schema elements to the complete query:
 
@@ -124,13 +132,13 @@ Before making any selections, list out:
 - For each table, list ALL column names with their typical values
 - Identify foreign key relationships
 
-**Step 1.3: Comprehensive Column Search**
-For EVERY entity/condition/attribute mentioned in the query:
+**Step 1.3: Essential Column Search**
+For each entity/condition/attribute mentioned in the query:
 - Search ALL tables for columns that could match
 - Check typical_values in EVERY column across ALL tables
 - Look for exact matches in typical_values first
 - Rank candidates by how well their typical_values match the query terms
-- **IMPORTANT**: Consider the query may be complex and need multiple tables/columns
+- **IMPORTANT**: Focus on query intent - what columns are actually needed for the answer?
 - If retry, identify specific issues to fix from evaluation feedback
 
 **Step 1.4: Single-Table Preference Check**
@@ -140,9 +148,9 @@ For EVERY entity/condition/attribute mentioned in the query:
 
 ### Phase 2: Schema Linking with Candidate Analysis
 
-**Step 2.1: Comprehensive Column Discovery**
-For EVERY filter/condition term in the query:
-- Show ALL columns from ALL tables that could match the term
+**Step 2.1: Essential Column Discovery**
+For each filter/condition term in the query:
+- Show all columns from all tables that could match the term
 - Include typical_values for each candidate column
 - Score each candidate:
   - **HIGH confidence**: Exact match found in typical_values
@@ -168,9 +176,10 @@ After analyzing all candidates:
   1. Exact value matches in typical_values (highest priority)
   2. Single-table solutions (second priority)
   3. Column name relevance (third priority)
-- **IMPORTANT**: Select ALL columns that are relevant to the query, not just the "best" one
-- For complex conditions (e.g., "charter-funded schools"), this often means selecting multiple related columns
-- Document why each column was selected
+- **IMPORTANT**: Select MINIMAL columns needed to answer the query intent precisely
+- Prioritize quality over completeness - only include essential columns for the specific question
+- For complex conditions, choose the most direct columns that provide the answer
+- Document why each column is essential (not just relevant) to answering the query
 
 **Step 2.5: Handle Retry Issues**
 If this is a retry with issues:
@@ -255,7 +264,7 @@ Examine the provided context:
 - **current_node**: Intent, existing mapping, sql, executionResult, status
 - **node_history**: Previous operations and their outcomes  
 - **sql_evaluation_analysis**: Quality assessment and improvement suggestions
-- **full_schema**: Complete database schema with sample data
+- **full_schema**: Complete database schema with description, table structures, and sample data
 
 For retries, explain what changed and why the new approach should work."""
     
@@ -324,7 +333,7 @@ For retries, explain what changed and why the new approach should work."""
         
         self.logger.info(f"Schema linking context prepared for node: {current_node_id}")
         self.logger.info(f"Node details: {node_dict}")
-        
+        self.logger.info(f"Full context: {context}")
         return context
     
     async def _parser_callback(self, memory: KeyValueMemory, task: str, result, cancellation_token) -> None:
@@ -418,6 +427,12 @@ For retries, explain what changed and why the new approach should work."""
         self.logger.info(f"Available tables in schema: {list(tables.keys())}")
         
         xml_parts = ["<database_schema>"]
+        
+        # Include database description if available
+        description = await self.schema_manager.get_database_description()
+        if description:
+            xml_parts.append(f"  <description><![CDATA[{description}]]></description>")
+        
         xml_parts.append(f"  <total_tables>{len(tables)}</total_tables>")
         xml_parts.append("  <tables>")
         

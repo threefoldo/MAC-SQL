@@ -92,7 +92,7 @@ class TextToSQLTreeOrchestrator:
         
         # Default LLM configuration
         self.llm_config = llm_config or {
-            "model_name": "gpt-4o",
+            "model_name": "gpt-4.1",
             "temperature": 0.1,
             "timeout": 300
         }
@@ -155,99 +155,73 @@ class TextToSQLTreeOrchestrator:
         
         coordinator = AssistantAgent(
             name="orchestrator",
-            system_message="""You are an orchestrator for a tree-based text-to-SQL workflow system with context-aware processing.
+            system_message="""You are an orchestrator for a tree-based text-to-SQL workflow system.
 
-## System Overview
-- User queries are represented as a tree structure in shared memory
-- Simple queries = single root node
-- Complex queries = root node with decomposed child nodes
-- Parent node SQL = combination of child node SQLs
-- Each node maintains context including previous attempts, errors, and feedback
-- Your goal: Process all nodes until all have successful SQLs
+# CRITICAL RULES - FOLLOW EXACTLY OR THE SYSTEM WILL BREAK:
+
+## Rule 1: NEVER CALL task_status_checker TWICE IN A ROW
+❌ BAD: task_status_checker → task_status_checker 
+✅ GOOD: task_status_checker → sql_generator → task_status_checker
+
+## Rule 2: AGENT DEPENDENCIES
+Each agent has specific requirements that must be met before it can run:
+
+**schema_linker**: No dependencies (can always run)
+**query_analyzer**: Requires schema_linker output (schema linked = True)
+**sql_generator**: Requires BOTH schema_linker AND query_analyzer outputs
+**sql_evaluator**: Requires sql_generator output (SQL exists)
+
+## Rule 3: DECISION LOGIC AFTER task_status_checker
+Based on CURRENT_STATUS, check dependencies and call the appropriate agent:
+
+**"needs_sql"**: Goal is to generate SQL
+  - Check: Does node have schema linked? If NO → call schema_linker
+  - Check: Does node have query analysis? If NO → call query_analyzer  
+  - If both YES → call sql_generator
+
+**"needs_eval"**: Goal is to evaluate SQL
+  - SQL exists, so call sql_evaluator
+
+**"bad_sql"**: Goal is to fix poor quality SQL
+  - Analyze what's missing from the evaluation feedback
+  - If schema issues mentioned → call schema_linker
+  - If analysis issues mentioned → call query_analyzer
+  - If SQL logic issues → call sql_generator with retry goal
+
+**"complete" + "All nodes complete"** → say "TERMINATE"
+
+## Rule 4: DECISION ALGORITHM
+```
+STEP 1: Call task_status_checker
+STEP 2: Read CURRENT_STATUS and node details from output 
+STEP 3: Apply decision logic (Rule 3) to determine which agent to call
+STEP 4: Call the appropriate agent with relevant goal
+STEP 5: After agent completes, go back to STEP 1
+```
 
 ## Available Tools
-1. **schema_linker** - Identifies relevant tables/columns for the current node
-2. **query_analyzer** - Understands query intent and decomposes complex queries into subtrees
-3. **sql_generator** - Generates SQL based on linked schema and query analysis
-4. **sql_evaluator** - Executes SQL and analyzes results, suggests improvements
-5. **task_status_checker** - Reports tree status and next required action
+- **schema_linker**: Links database schema to query
+- **query_analyzer**: Analyzes query intent and creates decomposition 
+- **sql_generator**: Generates SQL queries
+- **sql_evaluator**: Executes and evaluates SQL quality
+- **task_status_checker**: Reports what action is needed next
 
-## Tool Dependencies & Constraints
-- **query_analyzer** REQUIRES: Schema from current node OR parent node
-- **sql_generator** REQUIRES: Output from query_analyzer AND schema (current/parent node)
-- **sql_evaluator** REQUIRES: Existing SQL in current node (skip if no SQL exists)
-- **sql_generator** LIMIT: Maximum 2 attempts per node (for easy fixes only)
-- **NEVER call same tool twice consecutively on same node** (especially schema_linker and sql_evaluator)
-
-## Tool Parameters
-All tools accept a **"goal"** parameter that specifies the expected action. The goal should be:
-- Contextual to the current node's state and needs
-- May include summary of previous tool outputs
-- May reference errors or feedback from prior attempts
-- Adapted based on the node's current status
-
-Example goals:
-- "Link schema for customer orders query, focusing on date filters"
-- "Analyze query intent using linked schema information"
-- "Generate SQL based on analyzed query structure and schema"
-- "Retry SQL generation fixing the column name error"
-- "Evaluate SQL results, check if totals match expected business logic"
-
-## Critical: Task Status Checker Usage
-**The orchestrator MUST rely on task_status_checker output to make all decisions**
-- Call task_status_checker ONCE to get status, then ACT on the result immediately
-- DO NOT call task_status_checker twice in a row - take action based on the first result
-- The status report tells you EXACTLY what needs to be done next
-- IMMEDIATELY after getting status report, call the appropriate tool based on CURRENT_STATUS:
-  - If CURRENT_STATUS = "needs_sql" → call sql_generator immediately
-  - If CURRENT_STATUS = "needs_eval" → call sql_evaluator immediately  
-  - If CURRENT_STATUS = "bad_sql" → call sql_generator with retry goal immediately
-  - If CURRENT_STATUS = "complete" and OVERALL_STATUS = "All nodes complete" → say TERMINATE
-
-## Processing Workflow
-1. **Start**: Call task_status_checker with goal="check overall task status"
-2. **Read CURRENT_STATUS from the status report**
-3. **Immediately take action** based on CURRENT_STATUS:
-   - "needs_sql" → call sql_generator (do NOT call task_status_checker again)
-   - "needs_eval" → call sql_evaluator (do NOT call task_status_checker again)
-   - "bad_sql" → call sql_generator with retry goal (do NOT call task_status_checker again)
-   - "complete" + "All nodes complete" → say TERMINATE
-4. **After any tool execution**: Check task_status_checker again for next action
-5. **Repeat**: Always act immediately on status reports, never call task_status_checker twice consecutively
-
-## Status-Based Actions (from task_status_checker output)
-- **needs_schema** → schema_linker with goal="link schema for [node intent]"
-- **needs_analysis** → Check if schema exists (current/parent), then query_analyzer
-- **needs_sql** → Check if query analyzed AND schema exists, then sql_generator
-- **needs_eval** → Check if SQL exists, then sql_evaluator (skip if no SQL)
-- **bad_sql** → 
-  - If first failure: sql_generator with goal addressing specific error
-  - If second failure: Consider alternative approach or escalate
-
-## Error Handling
-- **No schema for analysis**: Check parent node for schema inheritance
-- **No query analysis for SQL generation**: Run query_analyzer first
-- **SQL generation failed twice**: Mark node as requiring manual intervention
-- **No SQL for evaluation**: Skip evaluator, check why SQL is missing
-- **Consecutive tool calls detected**: Switch to different tool or check status
-
-## Key Principles
-- Let task_status_checker guide all decisions
-- Tools automatically access full context (previous attempts, errors, feedback)
-- Respect tool dependencies: schema → analyzer → generator → evaluator
-- Track SQL generation attempts per node (max 2)
-- Avoid tool repetition patterns
-- Parent nodes wait for child completion
+## Example Workflow
+```
+1. task_status_checker → "needs_schema" → schema_linker
+2. task_status_checker → "needs_sql" → sql_generator  
+3. task_status_checker → "needs_eval" → sql_evaluator
+4. task_status_checker → "bad_sql" → sql_generator (retry)
+5. task_status_checker → "complete" + "All nodes complete" → TERMINATE
+```
 
 ## Termination
-Say "TERMINATE" when task_status_checker reports:
-- OVERALL_STATUS: "All nodes complete" 
-- OR all nodes are marked as complete status in the tree
-- Do NOT continue processing when all nodes are complete
+Say "TERMINATE" when task_status_checker reports OVERALL_STATUS = "All nodes complete"
 
-**CRITICAL**: Look for "OVERALL_STATUS: All nodes complete" in the status report - this is the definitive termination signal.
-
-Begin by calling task_status_checker with goal="check overall task status".
+# START INSTRUCTIONS
+1. Call task_status_checker with goal="check overall task status"
+2. Follow the decision algorithm above
+3. Never skip steps or call task_status_checker twice in a row
         """,
             model_client=coordinator_client,
             tools=[
@@ -330,7 +304,6 @@ Begin by calling task_status_checker with goal="check overall task status".
         # Run the orchestrator
         start_instruction = "Process the text-to-SQL workflow using shared memory"
         self.logger.info("Starting orchestrator workflow...")
-        stream = team.run_stream(task=start_instruction)
         
         # Simple message processing - just log tool calls and count steps
         step_count = 0
@@ -338,38 +311,51 @@ Begin by calling task_status_checker with goal="check overall task status".
         start_time = asyncio.get_event_loop().time()
         time_limit = 600  # 10 minutes
         workflow_complete = False
+        terminate_count = 0  # Track how many times TERMINATE has been said
         
-        async for message in stream:
-            current_time = asyncio.get_event_loop().time()
+        try:
+            stream = team.run_stream(task=start_instruction)
             
-            # Process orchestrator messages
-            if hasattr(message, 'source') and message.source == 'orchestrator':
-                step_count += 1
+            async for message in stream:
+                current_time = asyncio.get_event_loop().time()
                 
-                # Safety limits
-                if step_count >= max_steps:
-                    self.logger.warning(f"Reached maximum steps ({max_steps}). Stopping.")
-                    break
-                
-                if current_time - start_time >= time_limit:
-                    self.logger.warning(f"Reached time limit ({time_limit}s). Stopping.")
-                    break
-                
-                if hasattr(message, 'content'):
-                    if isinstance(message.content, list) and len(message.content) > 0:
-                        # Tool calls - just log the tool name and arguments
-                        for tool_call in message.content:
-                            if hasattr(tool_call, 'name'):
-                                tool_name = tool_call.name
-                                tool_args = getattr(tool_call, 'arguments', {})
-                                self.logger.info(f"[Step {step_count}] Calling: {tool_name} with args: {tool_args}")
+                # Process orchestrator messages
+                if hasattr(message, 'source') and message.source == 'orchestrator':
+                    step_count += 1
                     
-                    elif isinstance(message.content, str):
-                        # Check for termination
-                        if "TERMINATE" in str(message.content):
-                            workflow_complete = True
-                            self.logger.info(f"[Step {step_count}] ✅ WORKFLOW COMPLETE")
-                            break
+                    # Safety limits
+                    if step_count >= max_steps:
+                        self.logger.warning(f"Reached maximum steps ({max_steps}). Stopping.")
+                        break
+                    
+                    if current_time - start_time >= time_limit:
+                        self.logger.warning(f"Reached time limit ({time_limit}s). Stopping.")
+                        break
+                    
+                    if hasattr(message, 'content'):
+                        if isinstance(message.content, list) and len(message.content) > 0:
+                            # Tool calls - just log the tool name and arguments
+                            for tool_call in message.content:
+                                if hasattr(tool_call, 'name'):
+                                    tool_name = tool_call.name
+                                    tool_args = getattr(tool_call, 'arguments', {})
+                                    self.logger.info(f"[Step {step_count}] Calling: {tool_name} with args: {tool_args}")
+                        
+                        elif isinstance(message.content, str):
+                            # Check for termination
+                            if "TERMINATE" in str(message.content):
+                                terminate_count += 1
+                                workflow_complete = True
+                                self.logger.info(f"[Step {step_count}] ✅ WORKFLOW COMPLETE (TERMINATE #{terminate_count})")
+                                # Force immediate termination - no more processing
+                                break
+                                
+        except (asyncio.CancelledError, Exception) as e:
+            if isinstance(e, asyncio.CancelledError):
+                self.logger.debug("Stream cancelled during processing (this is normal during shutdown)")
+            else:
+                self.logger.error(f"Error during orchestrator processing: {str(e)}")
+            # Don't re-raise - continue to results extraction
         
         # Log completion
         total_time = asyncio.get_event_loop().time() - start_time
@@ -427,16 +413,58 @@ Begin by calling task_status_checker with goal="check overall task status".
             
             results["nodes"][node_id] = node_result
         
-        # Final result is simply the root node's SQL (regardless of quality)
+        # Final result priority: 1) Root node SQL, 2) Best quality SQL from any node, 3) Any SQL found
+        final_sql = None
+        
+        # First try root node
         if root_id and root_id in tree["nodes"]:
             root_node = tree["nodes"][root_id]
-            # Extract SQL from generation field
             if root_node.get("generation") and isinstance(root_node["generation"], dict):
-                root_sql = root_node["generation"].get("sql")
-            else:
-                root_sql = root_node.get("sql")  # Fallback to old field
-            results["final_result"] = root_sql
+                final_sql = root_node["generation"].get("sql")
+            elif root_node.get("sql"):
+                final_sql = root_node.get("sql")
         
+        # If root has no SQL, find the best SQL from any child node
+        if not final_sql or final_sql.startswith("SELECT 'Failed"):
+            best_score = -1
+            for node_id, node_data in tree["nodes"].items():
+                # Extract SQL from this node
+                node_sql = None
+                if node_data.get("generation") and isinstance(node_data["generation"], dict):
+                    node_sql = node_data["generation"].get("sql")
+                elif node_data.get("sql"):
+                    node_sql = node_data.get("sql")
+                
+                # Evaluate quality if we have SQL
+                if node_sql and node_sql.strip() and not node_sql.startswith("SELECT 'Failed"):
+                    # Simple scoring: prefer completed nodes with execution results
+                    score = 0
+                    if node_data.get("status") == "sql_generated":
+                        score += 10
+                    if node_data.get("evaluation"):
+                        score += 20
+                        eval_data = node_data["evaluation"]
+                        if eval_data.get("result_quality") == "excellent":
+                            score += 50
+                        elif eval_data.get("result_quality") == "good":
+                            score += 30
+                        if eval_data.get("answers_intent") == "yes":
+                            score += 20
+                    
+                    # Prefer complex queries over simple ones
+                    sql_lower = node_sql.lower()
+                    if "join" in sql_lower:
+                        score += 15
+                    if "count" in sql_lower:
+                        score += 10
+                    if "where" in sql_lower:
+                        score += 5
+                    
+                    if score > best_score:
+                        best_score = score
+                        final_sql = node_sql
+        
+        results["final_result"] = final_sql
         return results
     
     async def display_query_tree(self) -> None:

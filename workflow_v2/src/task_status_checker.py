@@ -91,8 +91,8 @@ class TaskStatusChecker(BaseTool):
             if evaluation:
                 quality = evaluation.get("result_quality", "").lower()
             
-            # Check attempt count - get from node_history or initialize
-            attempt_count = await self._get_node_attempt_count(node_id)
+            # Check attempt count from node data directly
+            attempt_count = node_data.get("generation_attempts", 0)
             max_attempts_reached = attempt_count >= 3
             
             # Determine initial node status
@@ -127,33 +127,30 @@ class TaskStatusChecker(BaseTool):
             children = node_status["children"]
             if children and len(children) > 0:
                 # This is a parent node with children
-                # Check if all children are complete
-                all_children_complete = True
-                any_child_has_good_sql = False
+                # Check if all children have finished processing (either complete or max attempts reached)
+                all_children_finished = True
                 
                 for child_id in children:
                     if child_id in node_statuses:
                         child_status = node_statuses[child_id]["status"]
-                        if child_status != "complete":
-                            all_children_complete = False
-                        if child_status == "complete":
-                            any_child_has_good_sql = True
+                        child_attempts = node_statuses[child_id]["attempt_count"]
+                        child_max_reached = node_statuses[child_id]["max_attempts_reached"]
+                        
+                        # Child is finished if it's complete OR has reached max attempts
+                        if child_status != "complete" and not child_max_reached:
+                            all_children_finished = False
+                            break
                     else:
-                        all_children_complete = False
+                        all_children_finished = False
+                        break
                 
-                # If all children are complete, mark parent as complete and update tree
-                if all_children_complete and any_child_has_good_sql:
+                # Move to parent when all children are finished (regardless of SQL quality)
+                if all_children_finished:
                     if node_status["status"] in ["needs_sql", "needs_eval", "bad_sql"]:
-                        node_statuses[node_id]["status"] = "complete"
-                        self.logger.info(f"Marked parent node {node_id} as complete (all children complete)")
-                        
-                        # CRITICAL: Actually update the node in the tree with completion status
-                        await self.tree_manager.update_node(node_id, {"status": "complete"})
-                        
-                        # If this is the root node, trigger SQL combination from children
-                        if not node_status["parent"]:
-                            await self._combine_child_sqls_for_root(node_id, children, tree)
-                            self.logger.info(f"Root node {node_id} SQL combination completed")
+                        # Mark parent as needing SQL generation (will be handled by SQLGeneratorAgent)
+                        # Do NOT mark as complete yet - let SQLGeneratorAgent handle SQL combination
+                        node_statuses[node_id]["status"] = "needs_sql"
+                        self.logger.info(f"Parent node {node_id} ready for SQL generation (all children finished)")
         
         return node_statuses
     
@@ -351,58 +348,7 @@ class TaskStatusChecker(BaseTool):
         
         return "\n".join(report_lines)
     
-    async def _get_node_attempt_count(self, node_id: str) -> int:
-        """Get the attempt count for a node from its operation history."""
-        try:
-            from node_history_manager import NodeHistoryManager
-            history_manager = NodeHistoryManager(self.memory)
-            operations = await history_manager.get_node_operations(node_id)
-            
-            # Count SQL generation attempts (record_generate_sql calls)
-            sql_generation_attempts = 0
-            for op in operations:
-                if hasattr(op, 'operationType') and op.operationType == 'GENERATE_SQL':
-                    sql_generation_attempts += 1
-                elif hasattr(op, 'operationType') and op.operationType in ['CREATE', 'UPDATE']:
-                    # Fallback: check if operation details contain SQL generation info
-                    if hasattr(op, 'operationDetails') and 'sql' in str(op.operationDetails).lower():
-                        sql_generation_attempts += 1
-            
-            return sql_generation_attempts
-        except Exception as e:
-            self.logger.warning(f"Could not get attempt count for node {node_id}: {e}")
-            return 0
     
-    async def _combine_child_sqls_for_root(self, root_id: str, children: list, tree: dict) -> None:
-        """Combine child node SQLs into a final SQL for the root node."""
-        try:
-            child_sqls = []
-            for child_id in children:
-                child_node = tree["nodes"].get(child_id, {})
-                child_sql = child_node.get("generation", {}).get("sql") or child_node.get("sql")
-                if child_sql:
-                    child_sqls.append(child_sql)
-            
-            if child_sqls:
-                # For now, use the first child's SQL as the root SQL
-                # In a more sophisticated implementation, this would intelligently combine them
-                combined_sql = child_sqls[0] if len(child_sqls) == 1 else child_sqls[0]
-                
-                # Update root node with combined SQL
-                await self.tree_manager.update_node_sql(root_id, combined_sql)
-                
-                # Mark as having generation result
-                generation_result = {
-                    "query_type": "complex",
-                    "sql": combined_sql,
-                    "explanation": f"Combined result from {len(child_sqls)} child queries",
-                    "considerations": "SQL generated by combining child node results"
-                }
-                await self.tree_manager.update_node(root_id, {"generation": generation_result})
-                
-                self.logger.info(f"Combined SQL for root node {root_id}: {combined_sql}")
-        except Exception as e:
-            self.logger.error(f"Error combining child SQLs for root {root_id}: {e}", exc_info=True)
     
     def get_tool(self):
         """Return self as the tool instance for use with agents"""

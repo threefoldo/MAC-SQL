@@ -70,32 +70,59 @@ You'll receive:
 **If execution_result.status = "success":**
 - Proceed to evaluate result quality
 
-### Step 3: Evaluate Result Quality
-Use these objective criteria:
+### Step 3: Apply Universal SQL Quality Framework
+Evaluate using this structured approach:
 
-**EXCELLENT**: All criteria met
-- SQL perfectly answers the intent
-- Results are complete and accurate
-- Row count is reasonable for the query
-- No data quality issues
+#### 3A: Output Structure Validation (CRITICAL)
+**Column Count Exactness**: Does the SQL return exactly what's requested?
+- **Count queries** ("How many...") → Must return 1 column (the count)
+- **List queries** ("List all X") → Must return only the requested columns 
+- **Calculation queries** ("What is the average...") → Must return 1 column (the result)
+- **FAIL if extra columns**: Additional columns like IDs, names when not requested
 
-**GOOD**: Minor issues that don't affect correctness
-- SQL correctly answers the intent
-- Results are accurate but may have minor formatting issues
-- Row count is reasonable
-- Data is complete
+**Column Purpose Alignment**: Every column must serve the query intent
+- No "helpful" extra information unless specifically asked
+- No debugging columns (IDs, codes unless they're the answer)
 
-**ACCEPTABLE**: Moderate issues that partially affect results
-- SQL partially answers the intent
-- Results may be incomplete or have some inaccuracies
-- Row count might be unexpected but not wrong
-- Some data quality concerns
+**Data Type Appropriateness**: Output types must match expectations
+- Count/aggregate results → Numeric values
+- Names/descriptions → Text values
+- Calculated values → Appropriate precision
 
-**POOR**: Major issues that prevent answering the intent
-- SQL fails to answer the intent
-- Results are incorrect, incomplete, or meaningless
-- Row count is clearly wrong (0 when should have results, or excessive)
-- Significant data quality problems
+#### 3B: SQL Complexity Assessment
+**Simplicity Check**: Is this the simplest SQL that achieves the goal?
+- **FLAG**: Complex CTEs for simple lookups
+- **FLAG**: Multiple joins when fewer would work
+- **FLAG**: Window functions for basic aggregation
+- **PREFER**: Simple WHERE > Complex subqueries
+
+**Join Necessity**: Are all joins required?
+- Each join should be essential for the result
+- Inner joins preferred over outer joins when possible
+
+#### 3C: Intent-Output Alignment
+**Question Type Mapping**:
+- "How many..." → Single numeric result
+- "List..." → Multiple rows, specific columns only
+- "What is..." → Single value answer
+- "Which..." → Specific matching records
+
+#### 3D: Quality Classification
+**EXCELLENT**: All quality checks pass
+- ✅ Correct column count and types
+- ✅ Appropriate SQL complexity
+- ✅ Perfect intent alignment
+- ✅ Minimal, clean SQL
+
+**GOOD**: Minor format/complexity issues
+- ✅ Correct logic and intent
+- ⚠️ Slightly over-engineered or extra formatting
+- ✅ Results are correct
+
+**POOR**: Structure or logic failures
+- ❌ Wrong column count/structure
+- ❌ Over-engineered solution
+- ❌ Missing or incorrect intent fulfillment
 
 ### Step 4: Validate Results Against Intent
 - **Completeness**: Does the SQL return all required information?
@@ -138,7 +165,7 @@ If sql_explanation and sql_considerations are provided:
   </generator_context_review>
   <issues>
     <issue>
-      <type>data_quality|performance|logic|completeness|accuracy|other</type>
+      <type>column_count|column_purpose|complexity|data_quality|logic|completeness|accuracy|other</type>
       <description>Specific description of the issue</description>
       <severity>high|medium|low</severity>
     </issue>
@@ -281,7 +308,7 @@ Focus on objective analysis - does the SQL result actually answer what was asked
                     context["execution_result"] = execution_result
         
         self.logger.debug(f"SQL evaluator context prepared with result status: {context.get('execution_result', {}).get('status', 'unknown')}")
-        
+        self.logger.info(f"Full context: {context}")
         return context
     
     async def _parser_callback(self, memory: KeyValueMemory, task: str, result, cancellation_token) -> None:

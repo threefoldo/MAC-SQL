@@ -162,6 +162,9 @@ class QueryNode:
     # SQLEvaluator outputs
     evaluation: Dict[str, Any] = field(default_factory=dict)  # execution results, analysis
     
+    # Generation attempt tracking
+    generation_attempts: int = 0  # Counter for SQL generation attempts
+    
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for storage."""
         result = {
@@ -171,7 +174,8 @@ class QueryNode:
             'intent': self.intent,
             'schema_linking': self.schema_linking,
             'generation': self.generation,
-            'evaluation': self.evaluation
+            'evaluation': self.evaluation,
+            'generation_attempts': self.generation_attempts
         }
         if self.parentId is not None:
             result['parentId'] = self.parentId
@@ -194,7 +198,8 @@ class QueryNode:
             schema_linking=data.get('schema_linking', {}),
             generation=data.get('generation', {}),
             evaluation=data.get('evaluation', {}),
-            evidence=data.get('evidence')
+            evidence=data.get('evidence'),
+            generation_attempts=data.get('generation_attempts', 0)
         )
 
 

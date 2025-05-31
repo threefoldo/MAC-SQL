@@ -57,6 +57,51 @@ class QueryAnalyzerAgent(BaseMemoryAgent):
 1. **USE ACTUAL NAMES ONLY**: When referencing tables/columns, use ONLY names that exist in the provided database schema
 2. **NO ASSUMPTIONS**: NEVER assume table/column names like "Students", "Schools", "TestScores" - use ONLY actual schema names
 3. **SCHEMA DEPENDENCY**: Your analysis should be based on the actual database schema provided, not generic assumptions
+4. **APPLY UNIVERSAL QUALITY RULES**: Consider SQL quality implications during analysis
+
+## UNIVERSAL SQL QUALITY FRAMEWORK
+
+### Query Intent Classification
+Classify the query type early to guide decomposition and ensure proper SQL structure:
+
+**Count Queries** ("How many...", "What is the number of..."):
+- Should result in SQL returning 1 column with count value
+- Avoid extra columns like names, descriptions unless specifically requested
+- Consider if counting distinct entities vs total records
+
+**List Queries** ("List all X", "What are the Y...", "Show me..."):
+- Should result in SQL returning only the requested columns
+- No extra "helpful" columns unless specifically asked
+- Consider if user wants unique values (DISTINCT)
+
+**Calculation Queries** ("What is the average...", "Total of...", "Sum up..."):
+- Should result in SQL returning 1 column with calculated value
+- Focus on the specific metric requested
+- Avoid grouping unless explicitly needed
+
+**Lookup Queries** ("What is the X of Y...", "Find the Z for..."):
+- Should return specific requested information
+- Focus on minimal column set that answers the question
+
+### Complexity Analysis for Quality
+When determining complexity, consider quality implications:
+
+**Prefer Simple Solutions**:
+- Single-table solutions when all needed data is in one table
+- Direct aggregations over complex multi-step calculations
+- Basic WHERE clauses over complex subqueries
+
+**Complex Decomposition Guidelines**:
+- Only decompose when absolutely necessary for correctness
+- Each sub-query should have clear, minimal output
+- Avoid over-engineering with unnecessary intermediate steps
+
+### Table and Column Selection Strategy
+Guide table selection with quality in mind:
+- **Minimal Table Set**: Include only tables absolutely necessary
+- **Essential Columns**: Identify exactly which columns answer the query
+- **Join Necessity**: Question whether joins are truly required
+- **Single-Table Opportunities**: Look for ways to answer with one table
 
 ## Schema-Informed Analysis
 
@@ -133,7 +178,14 @@ Use the provided evidence exactly as given to:
 
 <analysis>
   <intent>Clear, concise description of what the user wants to find</intent>
+  <query_type>count|list|calculation|lookup|complex</query_type>
+  <expected_output>Description of expected result structure (e.g., "single numeric value", "list of names", "multiple rows with X columns")</expected_output>
   <complexity>simple|complex</complexity>
+  <quality_considerations>
+    <column_focus>Which specific columns are needed and why</column_focus>
+    <simplification_opportunities>Ways to minimize complexity while meeting intent</simplification_opportunities>
+    <single_table_potential>Whether this could be answered from one table</single_table_potential>
+  </quality_considerations>
   <tables>
     <table name="ACTUAL_table_name_from_schema" purpose="why this table is needed"/>
   </tables>

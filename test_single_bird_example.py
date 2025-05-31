@@ -215,23 +215,35 @@ async def test_single_example(
         
         # Generate SQL
         logger.info("\nGenerating SQL...")
-        result = await orchestrator.process_query(
-            query=question,
-            db_name=db_id,
-            evidence=evidence
-        )
+        try:
+            result = await orchestrator.process_query(
+                query=question,
+                db_name=db_id,
+                evidence=evidence
+            )
+        except (asyncio.CancelledError, Exception) as e:
+            if isinstance(e, asyncio.CancelledError):
+                logger.warning("Query processing was cancelled - this may be normal during shutdown")
+                result = None
+            else:
+                logger.error(f"Error during query processing: {str(e)}")
+                result = None
         
         # Log the entire result
         logger.info("\n" + "="*80)
         logger.info("FULL RESULT:")
         logger.info("="*80)
-        import pprint as pp
-        result_str = pp.pformat(result, width=120)
-        logger.info(result_str)
+        
+        if result is not None:
+            import pprint as pp
+            result_str = pp.pformat(result, width=120)
+            logger.info(result_str)
+        else:
+            logger.error("No result returned from orchestrator")
         
         # Extract SQL
         pred_sql = None
-        if result and 'final_result' in result:
+        if result and 'final_result' in result and result['final_result']:
             pred_sql = result['final_result']
             logger.info(f"\nGenerated SQL:\n{pred_sql}")
         else:
@@ -251,8 +263,11 @@ async def test_single_example(
                         if 'executionResult' in node_data:
                             logger.error(f"  Execution: {node_data['executionResult'].get('status')}")
         
-        # Clean up SQL
-        pred_sql = replace_multiple_spaces(pred_sql)
+        # Clean up SQL (handle None case)
+        if pred_sql:
+            pred_sql = replace_multiple_spaces(pred_sql)
+        else:
+            pred_sql = "SELECT 'Failed to generate SQL'"
         
         # Evaluate
         logger.info("\n" + "="*80)

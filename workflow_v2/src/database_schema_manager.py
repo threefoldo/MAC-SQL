@@ -258,6 +258,33 @@ class DatabaseSchemaManager:
             await self.memory.set("databaseSchema", schema)
             self.logger.info(f"Set metadata for table '{table_name}'")
     
+    async def set_database_description(self, description: str) -> None:
+        """
+        Set a high-level description for the entire database.
+        
+        Args:
+            description: Human-readable description of the database purpose and structure
+        """
+        schema = await self.memory.get("databaseSchema")
+        if not schema:
+            schema = {"tables": {}}
+        
+        schema["description"] = description
+        await self.memory.set("databaseSchema", schema)
+        self.logger.info("Set database description")
+    
+    async def get_database_description(self) -> Optional[str]:
+        """
+        Get the high-level description for the database.
+        
+        Returns:
+            Database description if available, None otherwise
+        """
+        schema = await self.memory.get("databaseSchema")
+        if schema and "description" in schema:
+            return schema["description"]
+        return None
+    
     async def search_columns_by_type(self, data_type: str) -> List[Dict[str, str]]:
         """
         Search for columns by data type across all tables.
@@ -303,12 +330,18 @@ class DatabaseSchemaManager:
                 if col.isForeignKey:
                     total_foreign_keys += 1
         
+        schema = await self.memory.get("databaseSchema", {})
+        description = schema.get("description", "")
+        metadata = schema.get("metadata", {})
+        
         return {
             'table_count': len(tables),
             'total_columns': total_columns,
             'total_primary_keys': total_primary_keys,
             'total_foreign_keys': total_foreign_keys,
-            'average_columns_per_table': total_columns / len(tables) if tables else 0
+            'average_columns_per_table': total_columns / len(tables) if tables else 0,
+            'description': description,
+            'metadata': metadata
         }
     
     async def load_from_schema_reader(self, schema_reader: SchemaReader, db_id: str) -> None:
@@ -431,3 +464,46 @@ class DatabaseSchemaManager:
             await self.add_table(table_schema)
         
         self.logger.info(f"Loaded schema for database '{db_id}' with {len(table_names)} tables")
+        
+        # Load database-specific descriptions if available
+        try:
+            await self._load_database_description(db_id)
+        except Exception as e:
+            self.logger.debug(f"Could not load database description for {db_id}: {e}")
+    
+    async def _load_database_description(self, db_id: str) -> None:
+        """
+        Load database-specific description from file if available.
+        
+        Args:
+            db_id: Database ID to load description for
+        """
+        import os
+        
+        # Define paths to description files
+        description_files = {
+            "california_schools": "/home/norman/work/text-to-sql/MAC-SQL/data/bird/california_schools_schema_summary.md",
+            "financial": "/home/norman/work/text-to-sql/MAC-SQL/data/bird/financial_schema_summary.md",
+            "european_football_2": "/home/norman/work/text-to-sql/MAC-SQL/data/bird/european_football_2_schema_summary.md",
+            "superhero": "/home/norman/work/text-to-sql/MAC-SQL/data/bird/superhero_schema_summary.md",
+            "student_club": "/home/norman/work/text-to-sql/MAC-SQL/data/bird/student_club_schema_summary.md",
+            "card_games": "/home/norman/work/text-to-sql/MAC-SQL/data/bird/card_games_schema_summary.md"
+        }
+        
+        if db_id in description_files:
+            description_path = description_files[db_id]
+            if os.path.exists(description_path):
+                try:
+                    with open(description_path, 'r', encoding='utf-8') as f:
+                        description = f.read()
+                    await self.set_database_description(description)
+                    self.logger.info(f"Loaded description for database '{db_id}' from {description_path}")
+                    return
+                except Exception as e:
+                    self.logger.warning(f"Failed to load description for database '{db_id}': {e}")
+            else:
+                self.logger.warning(f"Description file not found for database '{db_id}': {description_path}")
+        
+        # Fallback to generic description
+        description = f"Database '{db_id}' with tables for various data analysis tasks"
+        await self.set_database_description(description)

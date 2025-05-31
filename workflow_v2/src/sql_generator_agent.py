@@ -53,6 +53,59 @@ class SQLGeneratorAgent(BaseMemoryAgent):
 4. **NO FICTIONAL SCHEMAS**: NEVER use assumed names like "Schools", "Students", "TestScores" - use ONLY actual names from mapping
 5. **FOLLOW CONSTRAINTS**: Apply all SQL generation constraints systematically
 6. **PREFER SIMPLICITY**: Use single-table queries when possible, avoid unnecessary joins
+7. **APPLY UNIVERSAL QUALITY RULES**: Follow the Universal SQL Quality Framework throughout generation
+
+## UNIVERSAL SQL QUALITY FRAMEWORK
+
+### Output Structure Validation (CRITICAL)
+**Column Count Exactness**: Generate SQL that returns exactly what's requested
+- **Count queries** ("How many...", "What is the number of...") → Must return 1 column (the count)
+- **List queries** ("List all X", "What are the Y...") → Must return only the requested columns
+- **Calculation queries** ("What is the average...", "Total of...") → Must return 1 column (the result)
+- **NEVER add extra columns** like IDs, names, codes unless specifically requested
+
+**Column Purpose Alignment**: Every selected column must serve the query intent
+- No "helpful" extra information unless specifically asked
+- No debugging columns (IDs, internal codes unless they're the answer)
+- No auxiliary data that doesn't address the question
+
+**Data Type Appropriateness**: Output types must match expectations
+- Count/aggregate results → Numeric values (INTEGER, REAL)
+- Names/descriptions → Text values (TEXT/VARCHAR)
+- Calculated values → Appropriate precision and type
+
+### SQL Complexity Assessment
+**Simplicity Check**: Generate the simplest SQL that achieves the goal
+- **AVOID**: Complex CTEs for simple lookups
+- **AVOID**: Multiple joins when fewer would work
+- **AVOID**: Window functions for basic aggregation
+- **PREFER**: Simple WHERE clauses over complex subqueries
+- **PREFER**: Single-table solutions when possible
+
+**Join Necessity**: Only include joins that are essential
+- Each join should be required for the result
+- Inner joins preferred over outer joins when possible
+- Validate that joins don't exclude valid data unnecessarily
+
+### Intent-Output Alignment
+**Question Type Mapping**:
+- "How many..." → Single numeric result (COUNT)
+- "List..." → Multiple rows, specific columns only
+- "What is..." → Single value answer
+- "Which..." → Specific matching records
+- "Average/Total/Sum" → Single aggregate value
+
+### Quality Classification Guidelines
+**Target EXCELLENT quality**:
+- ✅ Correct column count and types
+- ✅ Minimal, clean SQL structure
+- ✅ Perfect intent alignment
+- ✅ No unnecessary complexity
+
+**Avoid POOR quality indicators**:
+- ❌ Wrong column count/structure
+- ❌ Over-engineered solutions
+- ❌ Missing intent fulfillment
 
 ## SCHEMA VALIDATION CHECKPOINT
 Before writing any SQL:
@@ -97,9 +150,20 @@ Extract from the "current_node" JSON:
 - If retry: check if previous failure was due to wrong table/column selection
 
 ### Step 2: Determine Scenario and Table Strategy
-**New Generation**: No previous sql in the node
+**New Generation**: No previous sql in the node AND no children_nodes in context
 - Follow schema linker's table selection (single-table preferred)
 - Generate fresh SQL based on intent and mapping
+
+**Combination Generation**: Node has no sql but children_nodes with SQLs in context
+- **PRIMARY TASK**: Combine child node SQLs into a single query that answers the parent intent
+- **CRITICAL**: Examine ALL child SQLs provided in children_nodes context
+- **COMBINATION STRATEGIES**:
+  - If children represent parts of a complex query: use UNION, joins, or subqueries to combine
+  - If children answer the same question: choose the best SQL or combine with UNION  
+  - If children are sub-questions: create a query that incorporates all child results
+  - If only one child has valid SQL: adapt that SQL to match parent intent exactly
+- **ALWAYS** use the parent node's intent as the guiding principle for combination
+- **NEVER** just copy a child's SQL - always adapt it to match the parent intent
 
 **Retry Generation**: Node has sql and executionResult
 - **NEVER generate the same SQL that failed**
@@ -141,6 +205,17 @@ Extract from the "current_node" JSON:
 - Consider if simpler table structure could solve the problem
 
 ### Step 4: Generate SQL with Table Preference
+**For Combination Generation** (when children_nodes exist):
+- **STEP 1**: Extract all child SQLs from children_nodes context
+- **STEP 2**: Analyze parent intent to understand how children should be combined
+- **STEP 3**: Choose appropriate combination strategy:
+  - **UNION/UNION ALL**: When children answer similar questions but for different criteria
+  - **JOIN**: When children provide related data that needs to be combined  
+  - **SUBQUERY**: When one child's result is used as input to another query
+  - **ADAPTATION**: When one child SQL is close but needs modification for parent intent
+- **STEP 4**: Generate combined SQL that answers the parent intent exactly
+- **VALIDATION**: Ensure the final SQL addresses the parent intent, not just child intents
+
 **Single-Table Queries** (preferred when possible):
 - Direct SELECT from one table with proper WHERE/ORDER BY/GROUP BY
 - Use the exact column names from schema linker mapping
@@ -186,11 +261,17 @@ Extract from the "current_node" JSON:
   <explanation>
     How the query addresses the intent
   </explanation>
+  <quality_assessment>
+    <column_count_validation>Exact column count matches intent (e.g., count query → 1 column)</column_count_validation>
+    <complexity_justification>Why this level of complexity is necessary (prefer simple explanations)</complexity_justification>
+    <intent_alignment>How the SQL structure directly answers the question type</intent_alignment>
+  </quality_assessment>
   <considerations>
     - Assumptions made
     - Limitations
     - Changes from previous attempt (if retry)
     - Data type formatting applied (e.g., removed quotes from numeric values)
+    - Quality rules applied (column count, simplicity, intent alignment)
   </considerations>
 </generation>
 
@@ -255,6 +336,11 @@ For retries, explain what failed and what you changed."""
             if root_node:
                 evidence = root_node.evidence
         
+        # Increment generation attempt counter
+        node.generation_attempts += 1
+        await self.tree_manager.update_node(node.nodeId, {"generation_attempts": node.generation_attempts})
+        self.logger.info(f"SQL generation attempt #{node.generation_attempts} for node {current_node_id}")
+        
         # Build context with ALL node information - let the prompt guide how to use it
         context = {
             "current_node": json.dumps(node_dict, indent=2),
@@ -270,6 +356,7 @@ For retries, explain what failed and what you changed."""
         
         self.logger.info(f"SQL generator context prepared for node: {current_node_id}")
         self.logger.info(f"Node detail: {node_dict}")
+        self.logger.info(f"Full context: {context}")
         
         return context
     
@@ -310,17 +397,14 @@ For retries, explain what failed and what you changed."""
                         query_type=generation_result.get("query_type", "simple")
                     )
                     
-                    # Record in history with attempt tracking
+                    # Get node to check attempt count
                     node = await self.tree_manager.get_node(node_id)
                     if node:
-                        await self.history_manager.record_generate_sql(node)
+                        # Log attempt count for tracking
+                        self.logger.info(f"SQL generation completed for attempt #{node.generation_attempts} for node {node_id}")
                         
-                        # Track attempt count for max attempts logic
-                        current_attempts = await self._get_node_attempt_count(node_id)
-                        self.logger.info(f"SQL generation attempt #{current_attempts} for node {node_id}")
-                        
-                        if current_attempts >= 3:
-                            self.logger.warning(f"Node {node_id} has reached maximum attempts ({current_attempts}). Will be marked complete by TaskStatusChecker.")
+                        if node.generation_attempts >= 3:
+                            self.logger.warning(f"Node {node_id} has reached maximum attempts ({node.generation_attempts}). Will be marked complete by TaskStatusChecker.")
                     
                     # Basic logging
                     self.logger.info("="*60)
@@ -379,21 +463,6 @@ For retries, explain what failed and what you changed."""
             }
         return None
     
-    async def _get_node_attempt_count(self, node_id: str) -> int:
-        """Get the attempt count for a node from its operation history."""
-        try:
-            operations = await self.history_manager.get_node_operations(node_id)
-            
-            # Count SQL generation attempts (specifically record_generate_sql calls)
-            sql_generation_attempts = 0
-            for op in operations:
-                if hasattr(op, 'operationType') and op.operationType == 'GENERATE_SQL':
-                    sql_generation_attempts += 1
-            
-            return sql_generation_attempts
-        except Exception as e:
-            self.logger.warning(f"Could not get attempt count for node {node_id}: {e}")
-            return 0
     
     async def _get_schema_xml(self) -> str:
         """Get the database schema in XML format"""
