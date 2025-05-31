@@ -123,28 +123,10 @@ class OrchestratorAgent:
             )
         ]
         
-        # System message for the orchestrator
-        system_message = """You are an orchestrator for text-to-SQL tree processing.
-
-Your goal is to convert a natural language query into correct SQL by:
-1. Analyzing the query (may decompose complex queries)
-2. Linking relevant schema to each query node
-3. Generating SQL for each node
-4. Executing and validating SQL
-5. Ensuring all nodes have correct SQL before completing
-
-Tree processing steps:
-1. First, analyze the query using analyze_query tool
-2. Get tree status to see all nodes
-3. For each node without schema mapping, use link_schema
-4. For each node with mapping but no SQL, use generate_sql
-5. For each node with SQL, use execute_sql to validate
-6. If any SQL fails or needs improvement, regenerate
-7. When all nodes have correct SQL, use update_final_result
-
-Make decisions based on the current state and call appropriate tools.
-Always check tree status after major operations.
-"""
+        # Load system message from prompt templates
+        from prompts.prompt_loader import PromptLoader
+        loader = PromptLoader()
+        system_message = loader.get_prompt("orchestrator", version="v1.0")
         
         # Create the assistant agent
         self.agent = AssistantAgent(
