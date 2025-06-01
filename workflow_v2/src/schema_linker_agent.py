@@ -90,7 +90,7 @@ class SchemaLinkerAgent(BaseMemoryAgent):
         """Build the system message for schema linking"""
         from prompts.prompt_loader import PromptLoader
         loader = PromptLoader()
-        return loader.get_prompt("schema_linker", version="v1.0")
+        return loader.get_prompt("schema_linker", version="v1.1")
     
     async def _reader_callback(self, memory: KeyValueMemory, task: str, cancellation_token) -> Dict[str, Any]:
         """Read context from memory before schema linking"""
