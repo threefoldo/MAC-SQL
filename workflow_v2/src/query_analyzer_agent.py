@@ -48,7 +48,7 @@ class QueryAnalyzerAgent(BaseMemoryAgent):
         """Build the system message for query analysis"""
         from prompts.prompt_loader import PromptLoader
         loader = PromptLoader()
-        return loader.get_prompt("query_analyzer", version="v1.0")
+        return loader.get_prompt("query_analyzer", version="v1.1")
     
     async def _reader_callback(self, memory: KeyValueMemory, task: str, cancellation_token) -> Dict[str, Any]:
         """Read context from memory before analyzing the query"""

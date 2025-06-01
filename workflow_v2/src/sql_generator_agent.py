@@ -46,7 +46,7 @@ class SQLGeneratorAgent(BaseMemoryAgent):
         """Build the system message for SQL generation"""
         from prompts.prompt_loader import PromptLoader
         loader = PromptLoader()
-        return loader.get_prompt("sql_generator", version="v1.0")
+        return loader.get_prompt("sql_generator", version="v1.1")
     
     async def _reader_callback(self, memory: KeyValueMemory, task: str, cancellation_token) -> Dict[str, Any]:
         """Read context from memory before generating SQL"""
@@ -91,6 +91,11 @@ class SQLGeneratorAgent(BaseMemoryAgent):
         refiner_key = f"node_{current_node_id}_refiner_prompt"
         refiner_prompt = await self.memory.get(refiner_key)
         
+        # Get database-specific success patterns
+        database_name = await self._get_database_name()
+        success_patterns = await self._get_success_patterns(database_name)
+        failure_avoidance = await self._get_failure_avoidance_patterns(database_name)
+        
         # Get evidence from the node or root node
         evidence = node_dict.get("evidence")
         if not evidence and node.parentId:
@@ -104,6 +109,9 @@ class SQLGeneratorAgent(BaseMemoryAgent):
         await self.tree_manager.update_node(node.nodeId, {"generation_attempts": node.generation_attempts})
         self.logger.info(f"SQL generation attempt #{node.generation_attempts} for node {current_node_id}")
         
+        # Get intelligent learning guidance from SQLEvaluator
+        strategic_guidance = await self._get_strategic_guidance(current_node_id)
+        
         # Build context with ALL node information - let the prompt guide how to use it
         context = {
             "current_node": json.dumps(node_dict, indent=2),
@@ -111,7 +119,11 @@ class SQLGeneratorAgent(BaseMemoryAgent):
             "children_nodes": json.dumps(children_info, indent=2) if children_info else None,
             "node_history": json.dumps(history_dicts, indent=2) if history_dicts else None,  # ALL history
             "sql_evaluation_analysis": json.dumps(evaluation_analysis, indent=2) if evaluation_analysis else None,
-            "refiner_prompt": refiner_prompt if refiner_prompt else None
+            "refiner_prompt": refiner_prompt if refiner_prompt else None,
+            "strategic_guidance": strategic_guidance if strategic_guidance else None,  # INTELLIGENT LEARNING
+            "success_patterns": success_patterns,  # DYNAMIC SUCCESS PATTERNS
+            "failure_avoidance": failure_avoidance,  # DYNAMIC FAILURE AVOIDANCE
+            "database_name": database_name
         }
         
         # Remove None values
@@ -243,4 +255,72 @@ class SQLGeneratorAgent(BaseMemoryAgent):
             schema_parts.append(f"# Table: {table_name}\n[\n" + "\n".join(columns) + "\n]")
         
         return "\n".join(schema_parts)
+    
+    async def _get_strategic_guidance(self, current_node_id: str) -> Optional[str]:
+        """Get strategic guidance from intelligent pattern repositories"""
+        try:
+            # Get database name for pattern repository lookup
+            task_context = await self.memory.get("task_context")
+            database_name = task_context.get("db_name", "unknown") if task_context else "unknown"
+            
+            # Get node-specific guidance from pattern agents
+            node_guidance_key = f"node_{current_node_id}_strategic_guidance"
+            node_guidance = await self.memory.get(node_guidance_key)
+            
+            guidance_parts = []
+            
+            # Add pattern-based guidance for SQL Generator
+            if node_guidance and "sql_generator_guidance" in node_guidance:
+                sql_guidance_list = node_guidance["sql_generator_guidance"]
+                if sql_guidance_list:
+                    guidance_parts.append("=== INTELLIGENT PATTERN-BASED GUIDANCE ===")
+                    for guidance_item in sql_guidance_list:
+                        # Each guidance_item contains both success patterns and failure avoidance
+                        guidance_parts.append(guidance_item)
+            
+            # Get database-specific success patterns
+            success_repo_key = f"success_patterns_{database_name}"
+            success_repo = await self.memory.get(success_repo_key)
+            if success_repo:
+                sql_success_guidance = success_repo.get("agent_guidance", {}).get("sql_generator", [])
+                if sql_success_guidance:
+                    guidance_parts.append("\n=== DATABASE-SPECIFIC SUCCESS PATTERNS ===")
+                    for success_item in sql_success_guidance[-3:]:  # Last 3 success patterns
+                        guidance_parts.append(f"✓ PROVEN STRATEGY: {success_item}")
+            
+            # Get database-specific failure patterns to avoid
+            failure_repo_key = f"failure_patterns_{database_name}"
+            failure_repo = await self.memory.get(failure_repo_key)
+            if failure_repo:
+                sql_failure_guidance = failure_repo.get("corrective_guidance", {}).get("sql_generator", {})
+                if sql_failure_guidance:
+                    guidance_parts.append("\n=== CRITICAL PITFALLS TO AVOID ===")
+                    
+                    for guidance_type, guidance_list in sql_failure_guidance.items():
+                        if guidance_list:
+                            guidance_parts.append(f"❌ {guidance_type.replace('_', ' ').title()}:")
+                            for guidance_item in guidance_list[-2:]:  # Last 2 guidance items per type
+                                guidance_parts.append(f"   - {guidance_item}")
+            
+            # Add summary stats for context
+            if success_repo or failure_repo:
+                guidance_parts.append(f"\n=== LEARNING CONTEXT FOR {database_name.upper()} ===")
+                if success_repo:
+                    total_successes = success_repo.get("total_successes", 0)
+                    guidance_parts.append(f"✓ Successful patterns learned from {total_successes} executions")
+                if failure_repo:
+                    total_failures = failure_repo.get("total_failures", 0)
+                    guidance_parts.append(f"❌ Failure patterns learned from {total_failures} failed attempts")
+            
+            if guidance_parts:
+                final_guidance = "\n".join(guidance_parts)
+                self.logger.info(f"Pattern-based strategic guidance retrieved for SQL generation on {database_name}: {len(guidance_parts)} sections")
+                return final_guidance
+            
+            self.logger.info(f"No pattern-based guidance available yet for {database_name}")
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Error retrieving pattern-based strategic guidance: {str(e)}", exc_info=True)
+            return None
     

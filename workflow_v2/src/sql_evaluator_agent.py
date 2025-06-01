@@ -8,6 +8,7 @@ the results and provides insights.
 
 import logging
 import re
+import json
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
@@ -20,6 +21,8 @@ from memory_content_types import (
     QueryNode, NodeStatus, ExecutionResult
 )
 from utils import parse_xml_hybrid
+from success_pattern_agent import SuccessPatternAgent
+from failure_pattern_agent import FailurePatternAgent
 
 
 class SQLEvaluatorAgent(BaseMemoryAgent):
@@ -44,12 +47,16 @@ class SQLEvaluatorAgent(BaseMemoryAgent):
         self.history_manager = NodeHistoryManager(self.memory)
         self.task_manager = TaskContextManager(self.memory)
         self.schema_manager = DatabaseSchemaManager(self.memory)
+        
+        # Initialize intelligent pattern agents
+        self.success_pattern_agent = SuccessPatternAgent(self.memory, self.llm_config)
+        self.failure_pattern_agent = FailurePatternAgent(self.memory, self.llm_config)
     
     def _build_system_message(self) -> str:
         """Build the system message for SQL result analysis"""
         from prompts.prompt_loader import PromptLoader
         loader = PromptLoader()
-        return loader.get_prompt("sql_evaluator", version="v1.0")
+        return loader.get_prompt("sql_evaluator", version="v1.1")
     
     async def _reader_callback(self, memory: KeyValueMemory, task: str, cancellation_token) -> Dict[str, Any]:
         """Read context from memory before analyzing results"""
@@ -179,7 +186,7 @@ class SQLEvaluatorAgent(BaseMemoryAgent):
         return context
     
     async def _parser_callback(self, memory: KeyValueMemory, task: str, result, cancellation_token) -> None:
-        """Parse the analysis results and update memory"""
+        """Parse the analysis results, update memory, and perform intelligent learning"""
         if not result.messages:
             self.logger.warning("No messages in result")
             return
@@ -216,6 +223,9 @@ class SQLEvaluatorAgent(BaseMemoryAgent):
                         # Store evaluation result in the node's evaluation field
                         await self.tree_manager.update_node(node_id, {"evaluation": updated_evaluation})
                         self.logger.info(f"Stored complete evaluation result in query tree node {node_id}")
+                        
+                        # INTELLIGENT LEARNING: Call pattern agents to update rules
+                        await self._update_pattern_rules(evaluation_result)
                         
                         # Also update the execution_analysis memory as expected by tests/orchestrator
                         execution_context = await self.memory.get("execution_analysis")
@@ -495,3 +505,375 @@ class SQLEvaluatorAgent(BaseMemoryAgent):
             return result
         
         return None
+    
+    async def _perform_intelligent_learning(self, node_id: str, node: Any, evaluation_result: Dict[str, Any]) -> None:
+        """
+        Perform intelligent learning using dedicated LLM pattern agents.
+        
+        This method delegates pattern analysis to specialized Success and Failure Pattern Agents
+        that maintain intelligent repositories for each database.
+        """
+        try:
+            # 1. Extract complete workflow context
+            workflow_context = await self._extract_complete_workflow_context(node)
+            
+            # 2. Get database name for pattern agents
+            task_context = await self.task_manager.get()
+            database_name = task_context.databaseName if task_context else "unknown"
+            
+            # 3. Prepare execution data for pattern agents
+            execution_data = {
+                "database_name": database_name,
+                "workflow_context": workflow_context,
+                "evaluation_result": evaluation_result,
+                "node_id": node_id,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            # 4. Determine if execution was successful or failed
+            result_quality = evaluation_result.get("result_quality", "unknown")
+            answers_intent = evaluation_result.get("answers_intent", "unknown")
+            execution_status = workflow_context.get("evaluation", {}).get("execution_result", {}).get("status", "unknown")
+            
+            is_successful = (
+                execution_status == "success" and
+                result_quality in ["excellent", "good"] and
+                answers_intent == "yes"
+            )
+            
+            # 5. Delegate to appropriate pattern agent
+            if is_successful:
+                await self._analyze_with_success_agent(execution_data)
+                self.logger.info(f"Success pattern analysis initiated for node {node_id}")
+            else:
+                await self._analyze_with_failure_agent(execution_data)
+                self.logger.info(f"Failure pattern analysis initiated for node {node_id}")
+            
+            # 6. Generate and store strategic guidance from pattern repositories
+            await self._generate_guidance_from_patterns(node_id, database_name)
+            
+            self.logger.info(f"Intelligent learning with pattern agents completed for node {node_id}")
+            
+        except Exception as e:
+            self.logger.error(f"Error in intelligent learning: {str(e)}", exc_info=True)
+    
+    async def _update_pattern_rules(self, evaluation_result: Dict[str, Any]) -> None:
+        """Update pattern rules based on evaluation result"""
+        try:
+            # Determine if execution was successful or failed based on evaluation
+            result_quality = evaluation_result.get("result_quality", "unknown")
+            answers_intent = evaluation_result.get("answers_intent", "unknown")
+            
+            # Check execution status from current node evaluation
+            node_id = await self.tree_manager.get_current_node_id()
+            if not node_id:
+                self.logger.error("No current node ID for pattern analysis")
+                return
+            
+            node = await self.tree_manager.get_node(node_id)
+            execution_status = "unknown"
+            if node and node.evaluation and "execution_result" in node.evaluation:
+                execution_status = node.evaluation["execution_result"].get("status", "unknown")
+            
+            # Determine if this was a success or failure
+            is_successful = (
+                execution_status == "success" and
+                result_quality in ["excellent", "good"] and
+                answers_intent == "yes"
+            )
+            
+            # Call appropriate pattern agent (they will read context from memory managers)
+            if is_successful:
+                await self.success_pattern_agent.run(goal="analyze_successful_execution")
+                self.logger.info(f"Success pattern agent called for node {node_id} - updating DO rules")
+            else:
+                await self.failure_pattern_agent.run(goal="analyze_failed_execution")
+                self.logger.info(f"Failure pattern agent called for node {node_id} - updating DON'T rules")
+            
+        except Exception as e:
+            self.logger.error(f"Error updating pattern rules: {str(e)}", exc_info=True)
+    
+    async def _generate_guidance_from_patterns(self, node_id: str, database_name: str) -> None:
+        """Generate strategic guidance by querying pattern repositories"""
+        try:
+            # Get guidance from both pattern agents for all agent types
+            agent_types = ["schema_linker", "sql_generator", "query_analyzer"]
+            
+            strategic_guidance = {
+                f"{agent_type}_guidance": [] for agent_type in agent_types
+            }
+            strategic_guidance["orchestrator_guidance"] = []
+            
+            # Query both success and failure pattern agents for guidance
+            for agent_type in agent_types:
+                # Get success-based guidance
+                success_guidance = await self.success_pattern_agent.get_success_guidance(
+                    self.memory, database_name, agent_type
+                )
+                if success_guidance:
+                    strategic_guidance[f"{agent_type}_guidance"].append(f"SUCCESS PATTERNS:\n{success_guidance}")
+                
+                # Get failure-avoidance guidance
+                failure_guidance = await self.failure_pattern_agent.get_failure_avoidance_guidance(
+                    self.memory, database_name, agent_type
+                )
+                if failure_guidance:
+                    strategic_guidance[f"{agent_type}_guidance"].append(f"AVOID FAILURES:\n{failure_guidance}")
+            
+            # Store strategic guidance for agents to access
+            await self._store_strategic_guidance(node_id, strategic_guidance)
+            
+            self.logger.info(f"Strategic guidance generated from pattern repositories for {database_name}")
+            
+        except Exception as e:
+            self.logger.error(f"Error generating guidance from patterns: {str(e)}", exc_info=True)
+    
+    async def _extract_complete_workflow_context(self, node: Any) -> Dict[str, Any]:
+        """Extract complete workflow context for learning analysis"""
+        context = {
+            "original_query": node.intent,
+            "evidence": node.evidence,
+            "schema_linking": node.schema_linking,
+            "generation": node.generation,
+            "evaluation": node.evaluation,
+            "generation_attempts": node.generation_attempts,
+            "node_history": []
+        }
+        
+        # Get node operation history for deeper analysis
+        node_history = await self.history_manager.get_node_operations(node.nodeId)
+        if node_history:
+            context["node_history"] = [op.to_dict() for op in node_history]
+        
+        # Get task context for broader perspective
+        task_context = await self.task_manager.get()
+        if task_context:
+            context["task_context"] = task_context.to_dict()
+        
+        return context
+    
+    def _analyze_workflow_patterns(self, workflow_context: Dict[str, Any], evaluation_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze workflow patterns to identify learning opportunities"""
+        
+        patterns = {
+            "success_indicators": [],
+            "failure_patterns": [],
+            "agent_performance": {
+                "schema_linker": {"issues": [], "successes": []},
+                "query_analyzer": {"issues": [], "successes": []}, 
+                "sql_generator": {"issues": [], "successes": []}
+            },
+            "systemic_issues": [],
+            "improvement_opportunities": []
+        }
+        
+        # Analyze evaluation results
+        result_quality = evaluation_result.get("result_quality", "unknown")
+        answers_intent = evaluation_result.get("answers_intent", "unknown")
+        
+        if result_quality in ["excellent", "good"] and answers_intent == "yes":
+            patterns["success_indicators"].extend([
+                "sql_execution_successful",
+                "results_match_intent", 
+                "quality_assessment_positive"
+            ])
+            
+            # Analyze what made this successful
+            if workflow_context.get("generation", {}).get("query_type") == "simple":
+                patterns["agent_performance"]["sql_generator"]["successes"].append("simple_query_approach")
+            
+            schema_tables = self._extract_schema_tables(workflow_context.get("schema_linking", {}))
+            if len(schema_tables) <= 2:
+                patterns["agent_performance"]["schema_linker"]["successes"].append("minimal_table_selection")
+                
+        else:
+            # Analyze failure patterns
+            patterns["failure_patterns"].append(f"quality_{result_quality}")
+            patterns["failure_patterns"].append(f"intent_match_{answers_intent}")
+            
+            # Specific failure analysis
+            failure_analysis = self._analyze_specific_failures(workflow_context, evaluation_result)
+            patterns["agent_performance"].update(failure_analysis["agent_issues"])
+            patterns["systemic_issues"].extend(failure_analysis["systemic_issues"])
+            patterns["improvement_opportunities"].extend(failure_analysis["improvements"])
+        
+        return patterns
+    
+    def _analyze_specific_failures(self, workflow_context: Dict[str, Any], evaluation_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze specific failure modes for targeted learning"""
+        
+        analysis = {
+            "agent_issues": {
+                "schema_linker": {"issues": [], "successes": []},
+                "query_analyzer": {"issues": [], "successes": []},
+                "sql_generator": {"issues": [], "successes": []}
+            },
+            "systemic_issues": [],
+            "improvements": []
+        }
+        
+        # Analyze execution result details
+        execution_result = workflow_context.get("evaluation", {}).get("execution_result", {})
+        generated_sql = workflow_context.get("generation", {}).get("sql", "")
+        
+        if execution_result.get("status") == "error":
+            error_msg = execution_result.get("error", "").lower()
+            
+            if "column" in error_msg or "no such column" in error_msg:
+                analysis["agent_issues"]["schema_linker"]["issues"].append("column_mapping_error")
+                analysis["improvements"].append("improve_column_precision_mapping")
+                
+            if "table" in error_msg or "no such table" in error_msg:
+                analysis["agent_issues"]["schema_linker"]["issues"].append("table_selection_error")
+                analysis["improvements"].append("improve_table_selection_logic")
+        
+        # Analyze SQL complexity vs success
+        if "subquery" in generated_sql.lower() or "select" in generated_sql.lower().count("select") > 1:
+            if evaluation_result.get("result_quality") == "poor":
+                analysis["agent_issues"]["sql_generator"]["issues"].append("over_complex_sql")
+                analysis["improvements"].append("prefer_simple_queries")
+        
+        # Analyze column precision issues
+        execution_data = execution_result.get("data", [])
+        if execution_data and len(execution_data) > 0:
+            if isinstance(execution_data[0], (list, tuple)):
+                column_count = len(execution_data[0])
+                if column_count > 3:  # Heuristic for too many columns
+                    analysis["agent_issues"]["sql_generator"]["issues"].append("extra_columns_selected")
+                    analysis["improvements"].append("enforce_column_precision")
+        
+        # Analyze evidence adherence
+        evidence = workflow_context.get("evidence", "")
+        if evidence and "=" in evidence:  # Evidence contains formulas
+            if "cast" not in generated_sql.lower() and "%" in evidence.lower():
+                analysis["agent_issues"]["sql_generator"]["issues"].append("evidence_formula_ignored")
+                analysis["improvements"].append("follow_evidence_formulas_exactly")
+        
+        return analysis
+    
+    def _extract_schema_tables(self, schema_linking: Dict[str, Any]) -> List[str]:
+        """Extract table names from schema linking result"""
+        tables = []
+        
+        if "selected_tables" in schema_linking:
+            selected_tables = schema_linking["selected_tables"]
+            if isinstance(selected_tables, dict) and "table" in selected_tables:
+                table_data = selected_tables["table"]
+                if isinstance(table_data, list):
+                    tables = [t.get("name", "") for t in table_data if isinstance(t, dict)]
+                elif isinstance(table_data, dict):
+                    tables = [table_data.get("name", "")]
+        
+        return [t for t in tables if t]
+    
+    async def _update_learning_repository(self, pattern_analysis: Dict[str, Any]) -> None:
+        """Update the persistent learning repository with new patterns"""
+        
+        # Get existing learning repository
+        learning_repo = await self.memory.get("intelligent_learning_repository", {
+            "success_patterns": {},
+            "failure_patterns": {},
+            "agent_performance_history": {},
+            "strategic_guidance": {},
+            "pattern_frequency": {}
+        })
+        
+        # Update success patterns
+        for success in pattern_analysis["success_indicators"]:
+            if success not in learning_repo["success_patterns"]:
+                learning_repo["success_patterns"][success] = {"count": 0, "contexts": []}
+            learning_repo["success_patterns"][success]["count"] += 1
+        
+        # Update failure patterns  
+        for failure in pattern_analysis["failure_patterns"]:
+            if failure not in learning_repo["failure_patterns"]:
+                learning_repo["failure_patterns"][failure] = {"count": 0, "contexts": []}
+            learning_repo["failure_patterns"][failure]["count"] += 1
+        
+        # Update agent performance tracking
+        for agent_name, performance in pattern_analysis["agent_performance"].items():
+            if agent_name not in learning_repo["agent_performance_history"]:
+                learning_repo["agent_performance_history"][agent_name] = {"issues": {}, "successes": {}}
+            
+            for issue in performance["issues"]:
+                if issue not in learning_repo["agent_performance_history"][agent_name]["issues"]:
+                    learning_repo["agent_performance_history"][agent_name]["issues"][issue] = 0
+                learning_repo["agent_performance_history"][agent_name]["issues"][issue] += 1
+            
+            for success in performance["successes"]:
+                if success not in learning_repo["agent_performance_history"][agent_name]["successes"]:
+                    learning_repo["agent_performance_history"][agent_name]["successes"][success] = 0
+                learning_repo["agent_performance_history"][agent_name]["successes"][success] += 1
+        
+        # Store updated repository
+        await self.memory.set("intelligent_learning_repository", learning_repo)
+        
+    def _generate_strategic_guidance(self, pattern_analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate strategic guidance for future agent operations"""
+        
+        guidance = {
+            "schema_linker_guidance": [],
+            "sql_generator_guidance": [],
+            "query_analyzer_guidance": [],
+            "orchestrator_guidance": []
+        }
+        
+        # Schema Linker guidance
+        schema_issues = pattern_analysis["agent_performance"]["schema_linker"]["issues"]
+        if "column_mapping_error" in schema_issues:
+            guidance["schema_linker_guidance"].append(
+                "CRITICAL: Previous attempts had column mapping errors. Verify all columns exist in selected tables."
+            )
+        if "table_selection_error" in schema_issues:
+            guidance["schema_linker_guidance"].append(
+                "CRITICAL: Previous attempts had table selection errors. Double-check table names against schema."
+            )
+            
+        # SQL Generator guidance
+        sql_issues = pattern_analysis["agent_performance"]["sql_generator"]["issues"]
+        if "over_complex_sql" in sql_issues:
+            guidance["sql_generator_guidance"].append(
+                "CRITICAL: Previous attempts were over-complex and failed. Prefer simple ORDER BY LIMIT over subqueries."
+            )
+        if "extra_columns_selected" in sql_issues:
+            guidance["sql_generator_guidance"].append(
+                "CRITICAL: Previous attempts selected too many columns. Only select columns explicitly requested."
+            )
+        if "evidence_formula_ignored" in sql_issues:
+            guidance["sql_generator_guidance"].append(
+                "CRITICAL: Previous attempts ignored evidence formulas. Implement evidence calculations exactly as specified."
+            )
+            
+        # Orchestrator guidance
+        if len(pattern_analysis["failure_patterns"]) > 2:
+            guidance["orchestrator_guidance"].append(
+                "Consider schema re-linking if multiple failures occur."
+            )
+        
+        return guidance
+    
+    async def _store_strategic_guidance(self, node_id: str, strategic_guidance: Dict[str, Any]) -> None:
+        """Store strategic guidance for other agents to access"""
+        
+        # Store node-specific guidance
+        guidance_key = f"node_{node_id}_strategic_guidance"
+        await self.memory.set(guidance_key, strategic_guidance)
+        
+        # Store global guidance that accumulates across nodes
+        global_guidance = await self.memory.get("global_strategic_guidance", {
+            "schema_linker_guidance": [],
+            "sql_generator_guidance": [],
+            "query_analyzer_guidance": [],
+            "orchestrator_guidance": []
+        })
+        
+        # Merge new guidance (avoid duplicates)
+        for agent_type, new_guidance_list in strategic_guidance.items():
+            if agent_type in global_guidance:
+                for guidance_item in new_guidance_list:
+                    if guidance_item not in global_guidance[agent_type]:
+                        global_guidance[agent_type].append(guidance_item)
+        
+        await self.memory.set("global_strategic_guidance", global_guidance)
+        
+        self.logger.info(f"Strategic guidance stored for node {node_id} and updated global guidance")

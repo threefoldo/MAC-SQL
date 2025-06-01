@@ -145,7 +145,7 @@ class TextToSQLTreeOrchestrator:
         
     
     def _create_coordinator(self) -> AssistantAgent:
-        """Create the coordinator agent with improved prompt."""
+        """Create the coordinator agent with intelligent context playbook."""
         coordinator_client = OpenAIChatCompletionClient(
             model="gpt-4o",
             temperature=0.1,
@@ -153,9 +153,12 @@ class TextToSQLTreeOrchestrator:
             api_key=os.getenv("OPENAI_API_KEY")
         )
         
+        # Build dynamic system message with intelligent context playbook
+        base_system_message = self._build_intelligent_system_message()
+        
         coordinator = AssistantAgent(
             name="orchestrator",
-            system_message="""You are an orchestrator for a tree-based text-to-SQL workflow system.
+            system_message=base_system_message,
 
 # CRITICAL RULES - FOLLOW EXACTLY OR THE SYSTEM WILL BREAK:
 
