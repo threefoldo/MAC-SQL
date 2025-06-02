@@ -46,7 +46,7 @@ class SQLGeneratorAgent(BaseMemoryAgent):
         """Build the system message for SQL generation"""
         from prompts.prompt_loader import PromptLoader
         loader = PromptLoader()
-        return loader.get_prompt("sql_generator", version="v1.1")
+        return loader.get_prompt("sql_generator", version="v1.2")
     
     async def _reader_callback(self, memory: KeyValueMemory, task: str, cancellation_token) -> Dict[str, Any]:
         """Read context from memory before generating SQL"""
@@ -154,6 +154,11 @@ class SQLGeneratorAgent(BaseMemoryAgent):
                 explanation = generation_result.get("explanation", "")
                 considerations = generation_result.get("considerations", "")
                 
+                # Validate required fields
+                if not sql or sql.strip() == "":
+                    self.logger.error("Generated SQL is empty or invalid")
+                    return
+                
                 # Get current node ID from QueryTreeManager
                 node_id = await self.tree_manager.get_current_node_id()
                 
@@ -207,8 +212,24 @@ class SQLGeneratorAgent(BaseMemoryAgent):
     
     def _parse_generation_xml(self, output: str) -> Optional[Dict[str, Any]]:
         """Parse the SQL generation XML output using hybrid approach"""
-        # Use the hybrid parsing utility
-        result = parse_xml_hybrid(output, 'generation')
+        # Try v1.2 format first
+        result = parse_xml_hybrid(output, 'sql_generation')
+        if result and 'selection' in result:
+            # Convert v1.2 format to v1.1 compatible format
+            converted = {
+                'sql': result['selection'].get('final_sql', ''),
+                'query_type': result.get('strategy_planning', {}).get('complexity_level', 'simple'),
+                'explanation': result['selection'].get('selection_reason', ''),
+                'considerations': f"Context: {result.get('context_analysis', {}).get('query_intent', '')}; Strategy: {result.get('strategy_planning', {}).get('column_requirements', '')}"
+            }
+            # Merge other fields from v1.2
+            for key, value in result.items():
+                if key not in converted:
+                    converted[key] = value
+            result = converted
+        else:
+            # Fallback to v1.1 format
+            result = parse_xml_hybrid(output, 'generation')
         
         if result:
             # Clean up SQL (preserve line structure but remove extra whitespace)
@@ -322,5 +343,42 @@ class SQLGeneratorAgent(BaseMemoryAgent):
             
         except Exception as e:
             self.logger.error(f"Error retrieving pattern-based strategic guidance: {str(e)}", exc_info=True)
+            return None
+    
+    async def _get_database_name(self) -> str:
+        """Get the current database name from task context"""
+        try:
+            task_context = await self.memory.get("task_context")
+            return task_context.get("db_name", "unknown") if task_context else "unknown"
+        except Exception as e:
+            self.logger.error(f"Error getting database name: {str(e)}")
+            return "unknown"
+    
+    async def _get_success_patterns(self, database_name: str) -> Optional[str]:
+        """Get success patterns for the given database"""
+        try:
+            success_repo_key = f"success_patterns_{database_name}"
+            success_repo = await self.memory.get(success_repo_key)
+            if success_repo:
+                patterns = success_repo.get("patterns", [])
+                if patterns:
+                    return "\n".join([f"✓ {pattern}" for pattern in patterns[-3:]])  # Last 3 patterns
+            return None
+        except Exception as e:
+            self.logger.error(f"Error getting success patterns: {str(e)}")
+            return None
+    
+    async def _get_failure_avoidance_patterns(self, database_name: str) -> Optional[str]:
+        """Get failure avoidance patterns for the given database"""
+        try:
+            failure_repo_key = f"failure_patterns_{database_name}"
+            failure_repo = await self.memory.get(failure_repo_key)
+            if failure_repo:
+                patterns = failure_repo.get("patterns", [])
+                if patterns:
+                    return "\n".join([f"❌ AVOID: {pattern}" for pattern in patterns[-3:]])  # Last 3 patterns
+            return None
+        except Exception as e:
+            self.logger.error(f"Error getting failure avoidance patterns: {str(e)}")
             return None
     

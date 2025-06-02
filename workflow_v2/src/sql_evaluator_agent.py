@@ -56,7 +56,7 @@ class SQLEvaluatorAgent(BaseMemoryAgent):
         """Build the system message for SQL result analysis"""
         from prompts.prompt_loader import PromptLoader
         loader = PromptLoader()
-        return loader.get_prompt("sql_evaluator", version="v1.1")
+        return loader.get_prompt("sql_evaluator", version="v1.2")
     
     async def _reader_callback(self, memory: KeyValueMemory, task: str, cancellation_token) -> Dict[str, Any]:
         """Read context from memory before analyzing results"""
@@ -489,8 +489,31 @@ class SQLEvaluatorAgent(BaseMemoryAgent):
     
     def _parse_evaluation_xml(self, output: str) -> Optional[Dict[str, Any]]:
         """Parse the evaluation XML output using hybrid approach"""
-        # Use the hybrid parsing utility
-        result = parse_xml_hybrid(output, 'evaluation')
+        # Try v1.2 format first
+        result = parse_xml_hybrid(output, 'sql_evaluation')
+        if result:
+            # Convert v1.2 nested structure to flat structure expected by rest of code
+            converted = {}
+            if 'intent_alignment' in result:
+                converted['answers_intent'] = result['intent_alignment'].get('answers_intent', 'unknown')
+                converted['query_type'] = result['intent_alignment'].get('query_type', 'unknown')
+            if 'result_classification' in result:
+                converted['result_quality'] = result['result_classification'].get('overall_assessment', 'unknown')
+                converted['confidence_score'] = result['result_classification'].get('confidence_score', 0.5)
+                converted['continue_workflow'] = result['result_classification'].get('continue_workflow', 'yes')
+                converted['retry_recommended'] = result['result_classification'].get('retry_recommended', 'no')
+            if 'execution_analysis' in result:
+                converted['execution_status'] = result['execution_analysis'].get('status', 'unknown')
+                converted['row_count'] = result['execution_analysis'].get('row_count', 0)
+                converted['column_count'] = result['execution_analysis'].get('column_count', 0)
+            # Merge other top-level fields
+            for key, value in result.items():
+                if key not in converted:
+                    converted[key] = value
+            result = converted
+        else:
+            # Fallback to v1.0/v1.1 format
+            result = parse_xml_hybrid(output, 'evaluation')
         
         if result:
             # Convert confidence_score to float if it exists

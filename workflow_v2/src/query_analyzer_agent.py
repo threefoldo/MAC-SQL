@@ -48,7 +48,7 @@ class QueryAnalyzerAgent(BaseMemoryAgent):
         """Build the system message for query analysis"""
         from prompts.prompt_loader import PromptLoader
         loader = PromptLoader()
-        return loader.get_prompt("query_analyzer", version="v1.1")
+        return loader.get_prompt("query_analyzer", version="v1.2")
     
     async def _reader_callback(self, memory: KeyValueMemory, task: str, cancellation_token) -> Dict[str, Any]:
         """Read context from memory before analyzing the query"""
@@ -189,7 +189,31 @@ class QueryAnalyzerAgent(BaseMemoryAgent):
     
     def _parse_analysis_xml(self, output: str) -> Optional[Dict[str, Any]]:
         """Parse the analysis XML output using hybrid approach with robust fallback"""
-        # Use the hybrid parsing utility
+        # Try v1.2 format first
+        analysis = parse_xml_hybrid(output, 'query_analysis')
+        if analysis:
+            # Convert v1.2 nested structure to flat structure expected by rest of code
+            converted = {}
+            if 'context_analysis' in analysis:
+                converted['intent'] = analysis['context_analysis'].get('intent', '')
+                converted['query_type'] = analysis['context_analysis'].get('query_type', '')
+            if 'decomposition_decision' in analysis:
+                converted['complexity'] = analysis['decomposition_decision'].get('complexity', '')
+            if 'output_validation' in analysis:
+                converted['required_columns'] = analysis['output_validation'].get('required_columns', '')
+                converted['forbidden_columns'] = analysis['output_validation'].get('forbidden_columns', '')
+                converted['expected_column_count'] = analysis['output_validation'].get('expected_column_count', '')
+            if 'tables' in analysis:
+                converted['tables'] = analysis['tables']
+            if 'decomposition' in analysis:
+                converted['decomposition'] = analysis['decomposition']
+            # Merge other top-level fields
+            for key, value in analysis.items():
+                if key not in converted:
+                    converted[key] = value
+            return converted
+        
+        # Try v1.1 format fallback
         analysis = parse_xml_hybrid(output, 'analysis')
         
         # If parsing failed, try manual extraction for critical fields

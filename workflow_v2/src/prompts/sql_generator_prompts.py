@@ -229,7 +229,6 @@ Extract from the "current_node" JSON:
 ## Error Context Preservation
 - When retrying after errors, address the SPECIFIC issues identified by the evaluator
 - Common retry fixes:
-  - "NULL values in results" → Add IS NOT NULL conditions
   - "Wrong number of columns" → Check if selecting from correct table  
   - "Zero results" → Verify filter values match exactly with data
   - "Wrong calculation" → Check if using evidence formula correctly
@@ -543,7 +542,6 @@ Before writing the SELECT clause, analyze the question type:
 ## Error Context Preservation
 - When retrying after errors, address the SPECIFIC issues identified by the evaluator
 - Common retry fixes:
-  - "NULL values in results" → Add IS NOT NULL conditions
   - "Wrong number of columns" → Check if selecting from correct table  
   - "Zero results" → Verify filter values match exactly with data
   - "Wrong calculation" → Check if using evidence formula correctly
@@ -748,7 +746,7 @@ Generate correct SQL based on query intent, schema information, and context. Gen
 **Complexity Appropriateness**:
 - Simple solutions preferred when sufficient
 - Joins only when necessary for correctness
-- Evidence formulas implemented exactly when specified
+- Evidence formulas implemented exactly when specified"""
 
 # Version metadata
 VERSIONS = {

@@ -90,7 +90,7 @@ Evaluate using this structured approach:
 ### Step 5: Check for Common Issues
 - **Zero Results**: If row count = 0, is this expected or does it indicate filtering problems?
 - **Excessive Results**: Too many rows might indicate missing WHERE conditions
-- **NULL Values**: NULLs in result columns are often normal (e.g., missing phone numbers). Only flag as an issue if the query explicitly asks to exclude NULLs or if NULLs appear in columns that shouldn't have them (e.g., primary keys)
+- **NULL Values**: NULLs in result columns are often normal and can be the correct answer (e.g., missing charter numbers, phone numbers). Only flag as an issue if the query explicitly asks to exclude NULLs or if NULLs appear in columns that shouldn't have them (e.g., COUNT() results). Do not downgrade quality solely because results contain NULL values when the SQL logic is structurally correct.
 - **Duplicate Data**: Repeated rows might indicate incorrect JOINs
 - **Wrong Data Types**: Text where numbers expected, incorrect date formats
 
@@ -256,6 +256,7 @@ Execute SQL and evaluate results against query intent. Provide actionable feedba
 - DON'T ignore evidence formulas when validating calculations
 - DON'T accept overly complex SQL when simpler solutions work
 - DON'T skip validation of query type alignment with output structure
+- DON'T assume NULL values are incorrect - NULL can be the valid answer when data is missing or undefined
 
 ## 5-STEP METHODOLOGY
 
@@ -274,9 +275,10 @@ Execute SQL and evaluate results against query intent. Provide actionable feedba
 **Step 3: Quality Evaluation**
 □ Assess column count precision against query requirements
 □ Evaluate SQL complexity appropriateness for the task
-□ Check data quality, completeness, and accuracy
+□ Check data quality, completeness, and accuracy (NULL values can be correct answers)
 □ Validate business rule compliance using evidence
 □ Identify extra columns or structural issues
+□ Consider whether NULL results are expected based on the data and query logic
 
 **Step 4: Feedback Generation**
 □ Identify specific issues with severity levels
@@ -352,6 +354,7 @@ Execute SQL and evaluate results against query intent. Provide actionable feedba
       <completeness>complete|partial|empty</completeness>
       <accuracy>accurate|inaccurate|unknown</accuracy>
       <data_type_correctness>correct|incorrect</data_type_correctness>
+      <null_value_assessment>expected|unexpected|acceptable</null_value_assessment>
     </data_quality>
   </quality_evaluation>
 
@@ -388,19 +391,36 @@ Execute SQL and evaluate results against query intent. Provide actionable feedba
 - Appropriate SQL complexity for the task
 - Accurate results with proper data types
 - No execution errors or data quality issues
+- NULL values are appropriately handled (accepted when they represent valid missing data)
 
 **Good Quality**:
 - Correct logic and intent fulfillment
 - Minor complexity or formatting issues
 - Results are accurate but may have minor structural problems
 - Acceptable column count with justifiable variations
+- NULL values present but logically consistent with query and data
 
 **Poor Quality**:
 - Wrong column count or extra columns
 - Execution errors or missing results
 - Poor intent alignment or incorrect logic
 - Over-engineered solutions for simple queries
-- Data quality issues or incomplete results
+- Data quality issues or incomplete results (excluding valid NULL responses)
+
+## NULL VALUE EVALUATION GUIDELINES
+**NULL values should be considered ACCEPTABLE when**:
+- The database column naturally contains NULL values for some records
+- The query logic is structurally correct (proper joins, filters, syntax)
+- The SQL matches the expected pattern for the query type
+- NULL represents legitimate missing or undefined data (e.g., charter numbers for non-charter schools)
+
+**NULL values indicate a PROBLEM only when**:
+- The query has execution errors (wrong table/column names, syntax errors)
+- The SQL structure doesn't match the query intent (wrong joins, missing filters)
+- NULL appears where it should be impossible (e.g., in COUNT() results)
+
+**CRITICAL**: Do not downgrade SQL quality solely because results contain NULL values. Focus on whether the SQL correctly implements the query logic and whether NULL values are consistent with the data structure and business domain.
+"""
 
 # Version metadata
 VERSIONS = {
@@ -411,19 +431,13 @@ VERSIONS = {
         "created": "2024-01-15",
         "performance_baseline": True
     },
-    "v1.1": {
-        "template": VERSION_1_1,
-        "description": "Enhanced version with extra column detection based on analysis showing 37.7% of failures due to extra columns",
-        "lines": 350,
-        "created": "2024-06-01",
-        "improvements": "Extra column detection, enhanced column analysis, pattern matching from failure analysis",
-        "performance_baseline": False
-    },
     "v1.2": {
         "template": VERSION_1_2,
-        "description": "Actionable SQL evaluation with DO/DON'T rules, 5-step methodology, and agent-targeted feedback",
-        "lines": 150,
+        "description": "Actionable SQL evaluation with DO/DON'T rules, 5-step methodology, agent-targeted feedback, and proper NULL value handling",
+        "lines": 170,
         "created": "2024-06-01",
+        "updated": "2024-06-02",
+        "changes": "Added NULL value evaluation guidelines to prevent bias against valid NULL results",
         "performance_baseline": False
     }
 }
