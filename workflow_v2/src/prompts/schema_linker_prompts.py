@@ -115,9 +115,26 @@ If this is a retry with issues:
 - **SQL Errors**: Fix table/column names using exact names from schema
 - **Poor Quality**: Address specific evaluation feedback
 
-## Output Format
+## XML OUTPUT REQUIREMENTS
 
-**CRITICAL: Generate valid XML. Use CDATA for special characters or complex values.**
+**CRITICAL: Always escape these operators in XML content:**
+- `<` becomes `&lt;` 
+- `>` becomes `&gt;`
+- `&` becomes `&amp;`
+
+**Use backticks for text values:**
+- `Contra Costa`, `schools`, `table_name`
+
+**Examples:**
+- ✅ `score &lt;= 250` ❌ `score <= 250`
+- ✅ `value &gt; 50` ❌ `value > 50`  
+- ✅ `A &amp; B` ❌ `A & B`
+
+**Examples:**
+- ✅ <description>Filter where county = `Contra Costa` AND score &lt;= 250</description>
+- ✅ <purpose>Table `schools` for filtering</purpose>
+
+## Output Format
 
 <schema_linking>
   <available_schema>
@@ -134,12 +151,12 @@ If this is a retry with issues:
     <query_term original="user_search_term_here">
       <all_candidates>
         <candidate table="table1_name" column="column1_name" confidence="high">
-          <typical_values><![CDATA[['value1', 'value2', 'value3']]]></typical_values>
+          <typical_values>[&apos;value1&apos;, &apos;value2&apos;, &apos;value3&apos;]</typical_values>
           <exact_match_value>exact_matching_value_if_found</exact_match_value>
           <reason>Exact match found in typical_values</reason>
         </candidate>
         <candidate table="table2_name" column="column2_name" confidence="medium">
-          <typical_values><![CDATA[[100, 200, 300]]]></typical_values>
+          <typical_values>[100, 200, 300]</typical_values>
           <partial_match_value>partial_matching_value</partial_match_value>
           <reason>Partial match or column name similarity</reason>
         </candidate>
@@ -217,6 +234,10 @@ Find all required table names and column names to answer the user query. Use EXA
 - DON'T select extra columns beyond what's needed for the query
 - DON'T use approximations when exact values exist in typical_values
 - DON'T proceed if you cannot find required schema elements
+- DON'T ignore evidence requirements when selecting tables
+- DON'T choose the simplest table set if it cannot support evidence formulas
+- DON'T ignore table roles and column preference patterns when multiple options exist
+- DON'T select columns from inappropriate table types (e.g., address from non-master tables)
 
 ## 6-STEP PROCESS
 
@@ -224,6 +245,8 @@ Find all required table names and column names to answer the user query. Use EXA
 □ Read complete user query and identify OUTPUT requirements vs CONSTRAINTS
 □ OUTPUT: Extract terms that specify what data should be returned - **EXTRACT ONLY ONE OUTPUT TERM**
 □ CONSTRAINTS: Extract terms that specify filtering, sorting, grouping, limits (do not interpret or resolve)
+□ **EVIDENCE CONSTRAINTS**: Parse evidence for mathematical formulas, business rules, and additional data requirements
+□ Map evidence terms to constraint requirements (e.g., evidence formulas may require additional tables for calculation)
 □ **CRITICAL**: When multiple potential output terms exist, choose ONLY the most specific/final one mentioned
 □ **RULE**: Only extract multiple output terms if they represent completely different entities
 □ Record raw terms as they appear in the query without interpretation
@@ -236,6 +259,7 @@ Find all required table names and column names to answer the user query. Use EXA
 □ Rank matches: HIGH = exact value match, MEDIUM = partial match, LOW = column name similarity
 □ Document exact matching values found in typical_values
 □ Focus only on entities needed for SELECT clause
+□ **EVIDENCE INTEGRATION**: Cross-reference output requirements with evidence constraints to ensure complete data coverage
 
 **Step 3: Reduce Output Entities**
 □ Examine all output columns for overlapping or redundant information
@@ -245,6 +269,7 @@ Find all required table names and column names to answer the user query. Use EXA
 □ Remove columns that provide duplicate or unnecessary information
 □ **CRITICAL**: If one column contains the core requested information, prefer it over multiple columns
 □ Check if columns have overlap information as an indicator to remove some columns
+□ **EVIDENCE VALIDATION**: Ensure reduced column set still supports all evidence formula requirements
 
 **Step 4: Constraint Entity Mapping**
 □ For each CONSTRAINT term from Step 1, find matching columns in schema
@@ -252,6 +277,8 @@ Find all required table names and column names to answer the user query. Use EXA
 □ Check typical_values for constraint values mentioned in query
 □ Document exact matches found in typical_values
 □ Focus only on entities needed for filtering, sorting, grouping operations
+□ **EVIDENCE CONSTRAINT MAPPING**: Map evidence formulas to required calculation columns across all relevant tables
+□ **MULTI-TABLE CONSTRAINT ANALYSIS**: When constraints involve multiple data domains, identify all tables that may be needed for complete constraint satisfaction
 
 **Step 5: Required Entity Discovery**
 □ Identify additional entities required for SQL operations but not explicitly mentioned
@@ -259,6 +286,8 @@ Find all required table names and column names to answer the user query. Use EXA
 □ For aggregation operations: identify grouping columns if needed
 □ For ordering operations: identify sorting columns if needed
 □ Include only entities essential for query execution
+□ **EVIDENCE FORMULA REQUIREMENTS**: Identify tables needed to implement evidence mathematical formulas
+□ **COMPLEX AGGREGATION SUPPORT**: Ensure selected tables enable GROUP BY/HAVING patterns required by evidence
 
 **Step 6: Final Resolution**
 □ Resolve ambiguous terms by comparing candidates with original query requirements
@@ -267,6 +296,28 @@ Find all required table names and column names to answer the user query. Use EXA
 □ Ensure selected entities directly satisfy query requirements without extras
 □ Verify every selected table/column exists exactly as written in schema
 □ Validate all required join paths exist if multiple tables are used
+□ **EVIDENCE COMPLETENESS CHECK**: Verify that selected tables provide complete data coverage for all evidence formulas
+□ **COMPLEX PATTERN VALIDATION**: Ensure table selection supports meta-aggregation patterns like "average of averages"
+□ **TABLE PREFERENCE ANALYSIS**: When multiple tables contain similar columns, verify which combination best satisfies all query requirements
+
+## XML OUTPUT REQUIREMENTS
+
+**CRITICAL: Always escape these operators in XML content:**
+- `<` becomes `&lt;` 
+- `>` becomes `&gt;`
+- `&` becomes `&amp;`
+
+**Use backticks for text values:**
+- `Contra Costa`, `schools`, `table_name`
+
+**Examples:**
+- ✅ `score &lt;= 250` ❌ `score <= 250`
+- ✅ `value &gt; 50` ❌ `value > 50`  
+- ✅ `A &amp; B` ❌ `A & B`
+
+**Examples:**
+- ✅ <description>Filter where county = `Contra Costa` AND score &lt;= 250</description>
+- ✅ <purpose>Table `schools` for filtering</purpose>
 
 ## OUTPUT FORMAT
 
@@ -278,14 +329,19 @@ Find all required table names and column names to answer the user query. Use EXA
     <constraint_terms>
       <term>Raw CONSTRAINT terms extracted from query without interpretation</term>
     </constraint_terms>
+    <evidence_constraints>
+      <mathematical_formulas>List of formulas extracted from evidence</mathematical_formulas>
+      <calculation_requirements>Additional data requirements derived from evidence formulas</calculation_requirements>
+      <table_implications>Tables that may be needed to support evidence calculations</table_implications>
+    </evidence_constraints>
   </query_decomposition>
 
   <output_entity_mapping>
     <entity term="output_term_from_step1" confidence="high|medium|low">
       <table name="EXACT_table_name_from_schema">
         <column name="EXACT_column_name_from_schema" data_type="type">
-          <typical_values>Sample values confirming match</typical_values>
-          <exact_match_value>exact_matching_value_found</exact_match_value>
+          <typical_values>Sample values confirming match (escape &lt; &gt; &amp; &apos; &quot; if present)</typical_values>
+          <exact_match_value>exact_matching_value_found (escape special chars)</exact_match_value>
           <match_reason>Why this matches the output term</match_reason>
         </column>
       </table>
@@ -295,11 +351,11 @@ Find all required table names and column names to answer the user query. Use EXA
   <reduce_output_entities>
     <reduction_test>
       <original_columns>List of all output columns from step 2</original_columns>
-      <single_column_test column="most_relevant_column">
-        <evaluation>Can this single column satisfy the output requirement? yes|no</evaluation>
+      <single_column_test table="table_name" column="most_relevant_column">
+        <evaluation>yes|no</evaluation>
         <reasoning>Why single column works or doesn't work for the query</reasoning>
       </single_column_test>
-      <final_reduced_columns>Minimal column set after reduction</final_reduced_columns>
+      <final_reduced_columns table="table_name">Minimal column set after reduction</final_reduced_columns>
       <overlap_analysis>Do any columns contain overlapping information? Details of overlap.</overlap_analysis>
     </reduction_test>
   </reduce_output_entities>
@@ -308,8 +364,8 @@ Find all required table names and column names to answer the user query. Use EXA
     <entity term="constraint_term_from_step1" confidence="high|medium|low">
       <table name="EXACT_table_name_from_schema">
         <column name="EXACT_column_name_from_schema" data_type="type">
-          <typical_values>Sample values confirming match</typical_values>
-          <exact_match_value>exact_matching_value_found</exact_match_value>
+          <typical_values>Sample values confirming match (escape &lt; &gt; &amp; &apos; &quot; if present)</typical_values>
+          <exact_match_value>exact_matching_value_found (escape special chars)</exact_match_value>
           <match_reason>Why this matches the constraint term</match_reason>
         </column>
       </table>

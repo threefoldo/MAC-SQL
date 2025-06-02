@@ -137,15 +137,23 @@ class QueryAnalyzerAgent(BaseMemoryAgent):
                 self.logger.info(f"Complexity: {complexity.upper()}")
                 
                 if complexity == 'complex' and 'decomposition' in analysis:
-                    # Handle both 'subqueries' and 'subquery' keys from XML parsing
-                    subqueries = analysis['decomposition'].get('subqueries', analysis['decomposition'].get('subquery', []))
-                    self.logger.info(f"Decomposed into {len(subqueries)} sub-queries:")
-                    for sq in subqueries:
-                        intent = sq.get('intent', 'N/A') if isinstance(sq, dict) else 'N/A'
-                        self.logger.info(f"  - {intent}")
-                    combination = analysis['decomposition'].get('combination', {})
-                    strategy = combination.get('strategy', 'N/A') if isinstance(combination, dict) else 'N/A'
-                    self.logger.info(f"Combination strategy: {strategy.upper()}")
+                    # Safely handle subqueries with consistent key handling
+                    decomposition = analysis['decomposition']
+                    subqueries = self._extract_subqueries_safely(decomposition)
+                    
+                    if subqueries:
+                        self.logger.info(f"Decomposed into {len(subqueries)} sub-queries:")
+                        for sq in subqueries:
+                            intent = sq.get('intent', 'N/A') if isinstance(sq, dict) else 'N/A'
+                            self.logger.info(f"  - {intent}")
+                        
+                        # Safely extract combination strategy
+                        combination = decomposition.get('combination', decomposition.get('combination_strategy', {}))
+                        if isinstance(combination, dict):
+                            strategy = combination.get('strategy', combination.get('method', 'N/A'))
+                        else:
+                            strategy = 'N/A'
+                        self.logger.info(f"Combination strategy: {strategy.upper()}")
                 
                 self.logger.info("="*60)
                 self.logger.debug(f"Root node ID: {current_node_id}")
@@ -189,37 +197,72 @@ class QueryAnalyzerAgent(BaseMemoryAgent):
     
     def _parse_analysis_xml(self, output: str) -> Optional[Dict[str, Any]]:
         """Parse the analysis XML output using hybrid approach with robust fallback"""
-        # Try v1.2 format first
-        analysis = parse_xml_hybrid(output, 'query_analysis')
-        if analysis:
-            # Convert v1.2 nested structure to flat structure expected by rest of code
-            converted = {}
-            if 'context_analysis' in analysis:
-                converted['intent'] = analysis['context_analysis'].get('intent', '')
-                converted['query_type'] = analysis['context_analysis'].get('query_type', '')
-            if 'decomposition_decision' in analysis:
-                converted['complexity'] = analysis['decomposition_decision'].get('complexity', '')
-            if 'output_validation' in analysis:
-                converted['required_columns'] = analysis['output_validation'].get('required_columns', '')
-                converted['forbidden_columns'] = analysis['output_validation'].get('forbidden_columns', '')
-                converted['expected_column_count'] = analysis['output_validation'].get('expected_column_count', '')
-            if 'tables' in analysis:
-                converted['tables'] = analysis['tables']
-            if 'decomposition' in analysis:
-                converted['decomposition'] = analysis['decomposition']
-            # Merge other top-level fields
-            for key, value in analysis.items():
-                if key not in converted:
-                    converted[key] = value
-            return converted
-        
-        # Try v1.1 format fallback
-        analysis = parse_xml_hybrid(output, 'analysis')
-        
-        # If parsing failed, try manual extraction for critical fields
-        if not analysis:
-            analysis = {}
+        try:
+            # Try v1.2 format first
+            analysis = parse_xml_hybrid(output, 'query_analysis')
+            if analysis:
+                # Convert v1.2 nested structure to flat structure expected by rest of code
+                converted = {}
+                
+                # Safe extraction from nested structures
+                if isinstance(analysis.get('schema_integration'), dict):
+                    schema_integration = analysis['schema_integration']
+                    converted['corrected_output'] = schema_integration.get('corrected_output', '')
+                    converted['corrected_constraints'] = schema_integration.get('corrected_constraints', '')
+                
+                if isinstance(analysis.get('dependency_analysis'), dict):
+                    dependency_analysis = analysis['dependency_analysis']
+                    converted['dependency_type'] = dependency_analysis.get('dependency_type', '')
+                    converted['dependency_description'] = dependency_analysis.get('dependency_description', '')
+                    
+                if isinstance(analysis.get('decomposition_decision'), dict):
+                    decomposition_decision = analysis['decomposition_decision']
+                    converted['complexity'] = decomposition_decision.get('complexity', '')
+                    converted['reasoning'] = decomposition_decision.get('reasoning', '')
+                    converted['single_step_possible'] = decomposition_decision.get('single_step_possible', '')
+                    converted['single_table_solution'] = decomposition_decision.get('single_table_solution', '')
+                
+                # Safe handling of tables
+                if 'tables' in analysis:
+                    converted['tables'] = analysis['tables']
+                    
+                # Safe handling of decomposition
+                if 'decomposition' in analysis:
+                    converted['decomposition'] = analysis['decomposition']
+                
+                # Merge other top-level fields safely
+                for key, value in analysis.items():
+                    if key not in converted and value is not None:
+                        converted[key] = value
+                        
+                return converted
             
+            # Try v1.1 format fallback
+            analysis = parse_xml_hybrid(output, 'analysis')
+        
+            # If parsing failed, try manual extraction for critical fields
+            if not analysis:
+                analysis = self._extract_critical_fields(output)
+        
+        except Exception as e:
+            self.logger.error(f"Error in primary XML parsing: {str(e)}", exc_info=True)
+            # Fallback to manual extraction
+            analysis = self._extract_critical_fields(output)
+        
+        # Handle fallback parsing for subqueries if needed
+        if analysis and not analysis.get("decomposition", {}).get("subqueries") and SUBQ_PATTERN:
+            try:
+                analysis = self._extract_subqueries_fallback(output, analysis)
+            except Exception as e:
+                self.logger.warning(f"Failed to extract subqueries fallback: {str(e)}")
+        
+        return analysis if analysis else None
+    
+    def _extract_critical_fields(self, output: str) -> Dict[str, Any]:
+        """Extract critical fields using regex fallback when XML parsing fails"""
+        analysis = {}
+        
+        try:
             # Extract intent
             intent_match = re.search(r'<intent>(.*?)</intent>', output, re.DOTALL)
             if intent_match:
@@ -248,8 +291,14 @@ class QueryAnalyzerAgent(BaseMemoryAgent):
                 if table_names:
                     analysis["tables"] = [{"name": name} for name in table_names]
         
-        # Handle fallback parsing for subqueries if needed
-        if analysis and not analysis.get("decomposition", {}).get("subqueries") and SUBQ_PATTERN:
+        except Exception as e:
+            self.logger.warning(f"Error in critical field extraction: {str(e)}")
+            
+        return analysis
+    
+    def _extract_subqueries_fallback(self, output: str, analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract subqueries using fallback pattern matching"""
+        try:
             # Look for "Sub question N:" pattern in the output as fallback
             matches = re.finditer(SUBQ_PATTERN, output)
             subqueries = []
@@ -277,12 +326,55 @@ class QueryAnalyzerAgent(BaseMemoryAgent):
                     analysis["decomposition"] = {}
                 analysis["decomposition"]["subqueries"] = subqueries
         
-        return analysis if analysis else None
+        except Exception as e:
+            self.logger.warning(f"Error extracting subqueries: {str(e)}")
+        
+        return analysis
+    
+    def _extract_subqueries_safely(self, decomposition: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Safely extract subqueries from decomposition data"""
+        if not isinstance(decomposition, dict):
+            return []
+            
+        # Handle different possible keys and structures
+        subqueries = []
+        
+        # Try 'subqueries' first (list format)
+        if 'subqueries' in decomposition:
+            subqs = decomposition['subqueries']
+            if isinstance(subqs, list):
+                subqueries = subqs
+            elif isinstance(subqs, dict):
+                subqueries = [subqs]  # Single subquery as dict
+        
+        # Try 'subquery' fallback (can be list or single dict)
+        elif 'subquery' in decomposition:
+            subqs = decomposition['subquery']
+            if isinstance(subqs, list):
+                subqueries = subqs
+            elif isinstance(subqs, dict):
+                subqueries = [subqs]  # Single subquery as dict
+        
+        # Try 'step' (v1.2 format)
+        elif 'step' in decomposition:
+            steps = decomposition['step']
+            if isinstance(steps, list):
+                subqueries = steps
+            elif isinstance(steps, dict):
+                subqueries = [steps]
+        
+        # Ensure all items are dictionaries
+        valid_subqueries = []
+        for sq in subqueries:
+            if isinstance(sq, dict):
+                valid_subqueries.append(sq)
+        
+        return valid_subqueries
     
     async def _create_subquery_nodes(self, parent_id: str, decomposition: Dict[str, Any]) -> None:
         """Create sub-query nodes in the tree with inherited schema information"""
-        # Handle both 'subqueries' and 'subquery' keys from XML parsing
-        subqueries = decomposition.get("subqueries", decomposition.get("subquery", []))
+        # Safely extract subqueries
+        subqueries = self._extract_subqueries_safely(decomposition)
         
         # Get parent node's schema linking information for inheritance
         parent_node = await self.tree_manager.get_node(parent_id)

@@ -19,7 +19,7 @@ from node_history_manager import NodeHistoryManager
 from memory_content_types import (
     QueryNode, NodeStatus, ExecutionResult
 )
-from utils import extract_sql_from_text, parse_xml_hybrid
+from utils import extract_sql_from_text, parse_xml_hybrid, clean_sql_content
 from prompts import SQL_CONSTRAINTS
 
 
@@ -159,6 +159,11 @@ class SQLGeneratorAgent(BaseMemoryAgent):
                     self.logger.error("Generated SQL is empty or invalid")
                     return
                 
+                # Basic SQL validation
+                if not self._validate_sql_basic(sql):
+                    self.logger.warning(f"Generated SQL may be invalid: {sql}")
+                    # Continue anyway - let evaluator catch issues
+                
                 # Get current node ID from QueryTreeManager
                 node_id = await self.tree_manager.get_current_node_id()
                 
@@ -211,53 +216,173 @@ class SQLGeneratorAgent(BaseMemoryAgent):
     
     
     def _parse_generation_xml(self, output: str) -> Optional[Dict[str, Any]]:
-        """Parse the SQL generation XML output using hybrid approach"""
-        # Try v1.2 format first
-        result = parse_xml_hybrid(output, 'sql_generation')
-        if result and 'selection' in result:
-            # Convert v1.2 format to v1.1 compatible format
-            converted = {
-                'sql': result['selection'].get('final_sql', ''),
-                'query_type': result.get('strategy_planning', {}).get('complexity_level', 'simple'),
-                'explanation': result['selection'].get('selection_reason', ''),
-                'considerations': f"Context: {result.get('context_analysis', {}).get('query_intent', '')}; Strategy: {result.get('strategy_planning', {}).get('column_requirements', '')}"
-            }
-            # Merge other fields from v1.2
-            for key, value in result.items():
-                if key not in converted:
-                    converted[key] = value
-            result = converted
-        else:
+        """Parse the SQL generation XML output using hybrid approach with robust error handling"""
+        try:
+            # Try v1.2 format first
+            result = parse_xml_hybrid(output, 'sql_generation')
+            if result and 'selection' in result:
+                converted = self._convert_v12_to_v11_format(result)
+                if converted:
+                    return converted
+            
             # Fallback to v1.1 format
             result = parse_xml_hybrid(output, 'generation')
-        
-        if result:
-            # Clean up SQL (preserve line structure but remove extra whitespace)
-            if result.get("sql"):
-                # Split into lines, clean each line, then rejoin
-                lines = result["sql"].split('\n')
-                cleaned_lines = []
-                for line in lines:
-                    line = line.strip()
-                    if line and not line.startswith('--'):  # Skip empty lines and comments
-                        # Clean internal whitespace but preserve line structure
-                        line = re.sub(r'\s+', ' ', line)
-                        cleaned_lines.append(line)
+            if result:
+                # Validate and clean v1.1 format
+                return self._validate_v11_format(result)
+            
+            # Last resort: manual extraction
+            return self._extract_sql_fallback(output)
+            
+        except Exception as e:
+            self.logger.error(f"Error parsing SQL generation XML: {str(e)}", exc_info=True)
+            # Try fallback extraction
+            return self._extract_sql_fallback(output)
+    
+    def _convert_v12_to_v11_format(self, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Safely convert v1.2 format to v1.1 compatible format"""
+        try:
+            selection = result.get('selection')
+            if not selection:
+                return None
                 
-                result["sql"] = ' '.join(cleaned_lines).strip()
+            converted = {}
+            
+            if isinstance(selection, str):
+                # Handle case where selection is parsed as string
+                sql = self._extract_sql_from_string(selection)
+                converted = {
+                    'sql': sql,
+                    'query_type': 'simple',
+                    'explanation': 'Extracted from string content',
+                    'considerations': 'Selection was parsed as string, extracted SQL content'
+                }
+            elif isinstance(selection, dict):
+                # Safe extraction from nested structures
+                converted['sql'] = selection.get('final_sql', '')
+                converted['explanation'] = selection.get('selection_reason', '')
+                
+                # Safe extraction of nested fields
+                strategy_planning = result.get('strategy_planning', {})
+                if isinstance(strategy_planning, dict):
+                    converted['query_type'] = strategy_planning.get('complexity_level', 'simple')
+                    column_requirements = strategy_planning.get('column_requirements', '')
+                else:
+                    converted['query_type'] = 'simple'
+                    column_requirements = ''
+                
+                context_analysis = result.get('context_analysis', {})
+                if isinstance(context_analysis, dict):
+                    query_intent = context_analysis.get('query_intent', '')
+                else:
+                    query_intent = ''
+                
+                converted['considerations'] = f"Context: {query_intent}; Strategy: {column_requirements}"
+            
+            # Merge other top-level fields safely
+            for key, value in result.items():
+                if key not in converted and value is not None:
+                    converted[key] = value
+            
+            return converted
+            
+        except Exception as e:
+            self.logger.warning(f"Error converting v1.2 format: {str(e)}")
+            return None
+    
+    def _validate_v11_format(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate and clean v1.1 format result"""
+        try:
+            # Clean up SQL - handle XML entities
+            if result.get("sql"):
+                result["sql"] = clean_sql_content(result["sql"])
+            
+            # Ensure required fields exist
+            if not result.get("sql"):
+                self.logger.warning("No SQL found in generation result")
+                return None
+            
+            # Set defaults for missing fields
+            result.setdefault("query_type", "simple")
+            result.setdefault("explanation", "")
+            result.setdefault("considerations", "")
             
             return result
-        
-        # Fallback: try to extract SQL directly
-        sql = extract_sql_from_text(output)
-        if sql:
-            return {
-                "query_type": "unknown",
-                "sql": sql,
-                "explanation": "Extracted from response",
-                "considerations": ""
-            }
-        return None
+            
+        except Exception as e:
+            self.logger.warning(f"Error validating v1.1 format: {str(e)}")
+            return result  # Return as-is if validation fails
+    
+    def _extract_sql_from_string(self, selection_str: str) -> str:
+        """Extract SQL from string content using multiple patterns"""
+        try:
+            import re
+            
+            # Try multiple SQL extraction patterns
+            patterns = [
+                r'SELECT.*?(?=\n\s*$|\n\s*\]\]>|$)',  # Original pattern
+                r'SELECT.*?(?:;|$)',  # SQL ending with semicolon or end
+                r'WITH.*?(?:;|$)',     # CTE queries
+                r'(?:SELECT|WITH).*',  # Any SQL starting with SELECT or WITH
+            ]
+            
+            for pattern in patterns:
+                sql_match = re.search(pattern, selection_str, re.DOTALL | re.IGNORECASE)
+                if sql_match:
+                    sql = sql_match.group(0).strip()
+                    if sql and len(sql.strip()) > 5:  # Basic sanity check
+                        return sql
+            
+            # If no pattern matches, return the string as-is (might be valid SQL)
+            return selection_str.strip()
+            
+        except Exception as e:
+            self.logger.warning(f"Error extracting SQL from string: {str(e)}")
+            return selection_str
+    
+    def _extract_sql_fallback(self, output: str) -> Optional[Dict[str, Any]]:
+        """Fallback SQL extraction when XML parsing fails completely"""
+        try:
+            sql = extract_sql_from_text(output)
+            if sql and sql.strip():
+                return {
+                    "query_type": "unknown",
+                    "sql": clean_sql_content(sql),
+                    "explanation": "Extracted from response using fallback method",
+                    "considerations": "XML parsing failed, used regex extraction"
+                }
+            
+            self.logger.warning("No SQL found in output using fallback extraction")
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Error in fallback SQL extraction: {str(e)}")
+            return None
+    
+    def _validate_sql_basic(self, sql: str) -> bool:
+        """Basic SQL validation to catch obvious issues"""
+        try:
+            sql = sql.strip()
+            
+            # Must contain SELECT (basic requirement)
+            if not any(keyword in sql.upper() for keyword in ['SELECT', 'WITH']):
+                return False
+            
+            # Basic length check
+            if len(sql) < 10:
+                return False
+            
+            # Check for basic SQL structure
+            if 'SELECT' in sql.upper() and 'FROM' not in sql.upper():
+                # SELECT without FROM is suspicious unless it's a simple calculation
+                if not any(func in sql.upper() for func in ['COUNT(', 'SUM(', 'AVG(', 'MAX(', 'MIN(']):
+                    return False
+            
+            return True
+            
+        except Exception as e:
+            self.logger.warning(f"Error in basic SQL validation: {str(e)}")
+            return True  # Default to valid if validation fails
     
     
     async def _get_schema_xml(self) -> str:

@@ -143,6 +143,21 @@ Use the provided evidence exactly as given to:
 - Determine correct table/column references
 - Interpret data values and calculations
 
+## XML OUTPUT REQUIREMENTS
+
+**CRITICAL: Always escape these operators in XML content:**
+- `<` becomes `&lt;` 
+- `>` becomes `&gt;`
+- `&` becomes `&amp;`
+
+**Use backticks for text values:**
+- `Contra Costa`, `schools`, `table_name`
+
+**Examples:**
+- ✅ `score &lt;= 250` ❌ `score <= 250`
+- ✅ `value &gt; 50` ❌ `value > 50`  
+- ✅ `A &amp; B` ❌ `A & B`
+
 ## Output Format
 
 **VALIDATION REQUIREMENT**: Before generating output, verify that all table names in your <tables> section exist in the provided database schema.
@@ -150,7 +165,7 @@ Use the provided evidence exactly as given to:
 <analysis>
   <intent>Clear, concise description of what the user wants to find</intent>
   <query_type>count|list|calculation|lookup|complex</query_type>
-  <expected_output>Description of expected result structure (e.g., "single numeric value", "list of names", "multiple rows with X columns")</expected_output>
+  <expected_output>Description of expected result structure (e.g., &quot;single numeric value&quot;, &quot;list of names&quot;, &quot;multiple rows with X columns&quot;)</expected_output>
   <complexity>simple|complex</complexity>
   <quality_considerations>
     <column_focus>Which specific columns are needed and why</column_focus>
@@ -367,6 +382,21 @@ Use the provided evidence exactly as given to:
 - Determine correct table/column references
 - Interpret data values and calculations
 
+## XML OUTPUT REQUIREMENTS
+
+**CRITICAL: Always escape these operators in XML content:**
+- `<` becomes `&lt;` 
+- `>` becomes `&gt;`
+- `&` becomes `&amp;`
+
+**Use backticks for text values:**
+- `Contra Costa`, `schools`, `table_name`
+
+**Examples:**
+- ✅ `score &lt;= 250` ❌ `score <= 250`
+- ✅ `value &gt; 50` ❌ `value > 50`  
+- ✅ `A &amp; B` ❌ `A & B`
+
 ## Output Format
 
 **VALIDATION REQUIREMENT**: Before generating output, verify that all table names in your <tables> section exist in the provided database schema.
@@ -374,10 +404,10 @@ Use the provided evidence exactly as given to:
 <analysis>
   <intent>Clear, concise description of what the user wants to find</intent>
   <query_type>count|list|calculation|lookup|complex</query_type>
-  <expected_output>Description of expected result structure (e.g., "single numeric value", "list of names", "multiple rows with X columns")</expected_output>
+  <expected_output>Description of expected result structure (e.g., &quot;single numeric value&quot;, &quot;list of names&quot;, &quot;multiple rows with X columns&quot;)</expected_output>
   <minimal_output_requirements>
     <required_columns>List of columns that must be in SELECT (explicitly requested)</required_columns>
-    <forbidden_columns>List of column types that should NOT be included (e.g., "no entity IDs", "no intermediate calculations")</forbidden_columns>
+    <forbidden_columns>List of column types that should NOT be included (e.g., &quot;no entity IDs&quot;, &quot;no intermediate calculations&quot;)</forbidden_columns>
     <column_count>Expected number of columns in final result</column_count>
   </minimal_output_requirements>
   <complexity>simple|complex</complexity>
@@ -453,17 +483,42 @@ Decompose user queries into executable steps AND specify exact expected output f
 - DON'T use generic entity names like "students" or "schools"
 - DON'T over-engineer with complex multi-step solutions
 - DON'T leave output specifications vague or ambiguous
+- DON'T ignore evidence formulas that require complex aggregation patterns
+- DON'T treat meta-aggregation patterns as simple filtering operations
+
+## EVIDENCE FORMULA COMPLEXITY DETECTION
+
+**Pattern Recognition for Complex Aggregation:**
+- Mathematical formulas containing division operations between aggregates
+- Nested aggregation patterns requiring GROUP BY with HAVING clauses  
+- Geographic filtering combined with mathematical calculations
+- Multi-table requirements for complete data coverage
+- Business logic requiring sequential calculation steps
+
+**Decomposition Triggers:**
+- Evidence contains mathematical formulas requiring custom calculation
+- Query asks for multiple output types with complex constraints
+- Query spans multiple semantic domains (location + performance + attributes)
+- Simple schema linking would miss required tables for complete calculation
+
+**Evidence-Driven Table Requirements:**
+- Parse evidence for column relationships across multiple tables
+- Identify tables needed to implement evidence formulas correctly
+- Validate that selected tables support required mathematical operations
+- Ensure all evidence terms can be mapped to available schema elements
 
 ## 5-STEP PROCESS
 
 **Step 1: Context Analysis**
 □ Review schema linking results to understand OUTPUT vs CONSTRAINTS categorization already performed
 □ Use SchemaLinker's resolved_output and resolved_constraints as primary guidance
+□ **EVIDENCE COMPLEXITY DETECTION**: Parse evidence for formula patterns that indicate complex aggregation
 □ Check for error messages, evaluation feedback, or failure analysis that indicate SchemaLinker errors
 □ If errors detected: re-analyze OUTPUT vs CONSTRAINTS from original query context
 □ Analyze previous SQL attempts and evaluation feedback if provided
 □ Extract business rules and constraints from evidence
 □ Classify query type: count/list/calculation/lookup/complex
+□ **FLAG DECOMPOSITION TRIGGERS**: Identify if evidence + query complexity requires decomposition
 □ Validate that schema linking output requirements match expected decomposition needs
 
 **Step 2: Output Specification Analysis**
@@ -476,8 +531,10 @@ Decompose user queries into executable steps AND specify exact expected output f
 **Step 3: Dependency Analysis**
 □ Use schema analysis to identify data relationships and join requirements
 □ Check if query requires intermediate calculations or aggregations
-□ Look for comparisons against computed values (e.g., "above average")
+□ Look for comparisons against computed values that require GROUP BY/HAVING
+□ **EVIDENCE FORMULA DETECTION**: Identify mathematical formulas requiring multi-step calculation
 □ Determine if results from one operation feed into another
+□ **META-AGGREGATION PATTERNS**: Detect when aggregation functions need to be aggregated again
 □ Consider previous SQL failures to avoid similar complexity issues
 
 **Step 4: Decomposition Decision**
@@ -494,6 +551,25 @@ Decompose user queries into executable steps AND specify exact expected output f
 □ Confirm decomposition preserves query intent and uses available schema
 □ Validate that combination strategy produces correct result with given tables
 
+## XML OUTPUT REQUIREMENTS
+
+**CRITICAL: Always escape these operators in XML content:**
+- `<` becomes `&lt;` 
+- `>` becomes `&gt;`
+- `&` becomes `&amp;`
+
+**Use backticks for text values:**
+- `Contra Costa`, `schools`, `table_name`
+
+**Examples:**
+- ✅ `score &lt;= 250` ❌ `score <= 250`
+- ✅ `value &gt; 50` ❌ `value > 50`  
+- ✅ `A &amp; B` ❌ `A & B`
+
+**Examples:**
+- ✅ <description>Filter where county = `Contra Costa` AND score &lt;= 250</description>
+- ✅ <purpose>Table `schools` for filtering</purpose>
+
 ## OUTPUT FORMAT
 
 <query_analysis>
@@ -507,8 +583,14 @@ Decompose user queries into executable steps AND specify exact expected output f
 
   <dependency_analysis>
     <requires_intermediate_steps>true|false</requires_intermediate_steps>
-    <dependency_type>aggregation|calculation|comparison|multi_level|none</dependency_type>
+    <dependency_type>aggregation|calculation|comparison|multi_level|meta_aggregation|none</dependency_type>
     <dependency_description>What makes this complex</dependency_description>
+    <evidence_complexity>
+      <contains_formulas>true|false</contains_formulas>
+      <formula_patterns>List of mathematical patterns found in evidence</formula_patterns>
+      <requires_custom_aggregation>true|false</requires_custom_aggregation>
+      <multi_table_formula_support>true|false</multi_table_formula_support>
+    </evidence_complexity>
     <schema_relationships>How identified tables/columns relate to dependencies</schema_relationships>
     <previous_failure_insights>Lessons from prior SQL attempts if applicable</previous_failure_insights>
   </dependency_analysis>
@@ -517,11 +599,10 @@ Decompose user queries into executable steps AND specify exact expected output f
     <complexity>simple|complex</complexity>
     <reasoning>Why this is simple or complex based on available schema</reasoning>
     <single_step_possible>true|false</single_step_possible>
-    <single_table_solution>true|false (from schema linking analysis)</single_table_solution>
+    <single_table_solution>true|false</single_table_solution>
     <breakpoints>Logical points to split using available schema elements</breakpoints>
     <schema_guided_approach>How schema analysis influences decomposition strategy</schema_guided_approach>
   </decomposition_decision>
-
 
   <tables>
     <table name="EXACT_table_name_from_schema" purpose="why needed"/>

@@ -48,6 +48,25 @@ You receive:
 - Existing DO and DON'T rules for all agent types
 - Database and execution metadata
 
+# XML OUTPUT REQUIREMENTS
+
+**CRITICAL: Always escape these operators in XML content:**
+- `<` becomes `&lt;` 
+- `>` becomes `&gt;`
+- `&` becomes `&amp;`
+
+**Use backticks for text values:**
+- `Contra Costa`, `schools`, `table_name`
+
+**Examples:**
+- ✅ `score &lt;= 250` ❌ `score <= 250`
+- ✅ `value &gt; 50` ❌ `value > 50`  
+- ✅ `A &amp; B` ❌ `A & B`
+
+**Examples:**
+- ✅ <description>Filter where county = `Contra Costa` AND score &lt;= 250</description>
+- ✅ <purpose>Table `schools` for filtering</purpose>
+
 # OUTPUT FORMAT
 Generate DON'T rules classified by the agent responsible for the mistake:
 

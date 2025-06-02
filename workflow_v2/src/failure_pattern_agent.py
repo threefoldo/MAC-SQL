@@ -118,16 +118,66 @@ class FailurePatternAgent(BaseMemoryAgent):
         self.logger.info(f"Raw failure analysis output: {last_message}")
         
         try:
-            # Parse the XML analysis
+            # Parse the XML analysis with fallback handling
             analysis_result = parse_xml_hybrid(last_message, 'failure_analysis')
             
             if analysis_result:
-                # Update rules using PatternRepositoryManager
-                await self.pattern_repo.update_rules_from_failure(analysis_result)
-                
-                self.logger.info("Failure pattern analysis completed and rules updated")
+                # Validate the analysis structure
+                if self._validate_failure_analysis(analysis_result):
+                    # Update rules using PatternRepositoryManager
+                    await self.pattern_repo.update_rules_from_failure(analysis_result)
+                    self.logger.info("Failure pattern analysis completed and rules updated")
+                else:
+                    self.logger.warning("Failure analysis structure validation failed")
             else:
                 self.logger.warning("Failed to parse failure analysis XML output")
+                # Try manual extraction for critical parts
+                manual_result = self._extract_failure_rules_manually(last_message)
+                if manual_result:
+                    await self.pattern_repo.update_rules_from_failure(manual_result)
+                    self.logger.info("Failure patterns extracted manually and rules updated")
                 
         except Exception as e:
             self.logger.error(f"Error parsing failure analysis results: {str(e)}", exc_info=True)
+    
+    def _validate_failure_analysis(self, analysis: Dict[str, Any]) -> bool:
+        """Validate that failure analysis has the expected structure"""
+        try:
+            if not isinstance(analysis.get('agent_rules'), dict):
+                return False
+            
+            agent_rules = analysis['agent_rules']
+            expected_agents = ['schema_linker', 'sql_generator', 'query_analyzer']
+            
+            # Check that at least one agent has rules
+            has_rules = False
+            for agent in expected_agents:
+                if agent in agent_rules and isinstance(agent_rules[agent], dict):
+                    # Check if agent has any dont_rule_* keys
+                    for key in agent_rules[agent].keys():
+                        if key.startswith('dont_rule_'):
+                            has_rules = True
+                            break
+            
+            return has_rules
+            
+        except Exception as e:
+            self.logger.warning(f"Error validating failure analysis: {str(e)}")
+            return False
+    
+    def _extract_failure_rules_manually(self, output: str) -> Optional[Dict[str, Any]]:
+        """Manual extraction when XML parsing fails"""
+        try:
+            # Extract DON'T rules using regex
+            dont_rules = re.findall(r'<dont_rule_\d+>(.*?)</dont_rule_\d+>', output, re.DOTALL)
+            if dont_rules:
+                # Create minimal structure
+                return {
+                    'agent_rules': {
+                        'general': {f'dont_rule_{i+1}': rule.strip() for i, rule in enumerate(dont_rules)}
+                    }
+                }
+            return None
+        except Exception as e:
+            self.logger.warning(f"Manual extraction failed: {str(e)}")
+            return None

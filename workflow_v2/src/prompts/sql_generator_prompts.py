@@ -233,16 +233,37 @@ Extract from the "current_node" JSON:
   - "Zero results" → Verify filter values match exactly with data
   - "Wrong calculation" → Check if using evidence formula correctly
 
+## XML OUTPUT REQUIREMENTS
+
+**CRITICAL: Always escape these operators in XML content:**
+- `<` becomes `&lt;` 
+- `>` becomes `&gt;`
+- `&` becomes `&amp;`
+
+**Use backticks for text values:**
+- `Contra Costa`, `schools`, `table_name`
+
+**Examples:**
+- ✅ `score &lt;= 250` ❌ `score <= 250`
+- ✅ `value &gt; 50` ❌ `value > 50`  
+- ✅ `A &amp; B` ❌ `A & B`
+
+**Examples:**
+- ✅ <sql>SELECT COUNT(*) WHERE score &lt;= 250 AND county = `Contra Costa`</sql>
+- ✅ <description>Filter schools where test_takers &lt; 100</description>
+
 ## Output Format
 
 <generation>
   <query_type>simple|join|aggregate|subquery|complex</query_type>
   <sql>
+    
     -- Your SQL query here
     -- Example with correct data types:
     -- For INTEGER column: WHERE age = 25 (no quotes)
-    -- For TEXT column: WHERE name = 'John' (with quotes)
+    -- For TEXT column: WHERE name = &apos;John&apos; (with quotes)
     SELECT ... FROM ... WHERE ...
+    
   </sql>
   <explanation>
     How the query addresses the intent
@@ -254,7 +275,7 @@ Extract from the "current_node" JSON:
   </quality_assessment>
   <considerations>
     - Assumptions made
-    - Limitations
+    - Limitations  
     - Changes from previous attempt (if retry)
     - Data type formatting applied (e.g., removed quotes from numeric values)
     - Quality rules applied (column count, simplicity, intent alignment)
@@ -546,16 +567,37 @@ Before writing the SELECT clause, analyze the question type:
   - "Zero results" → Verify filter values match exactly with data
   - "Wrong calculation" → Check if using evidence formula correctly
 
+## XML OUTPUT REQUIREMENTS
+
+**CRITICAL: Always escape these operators in XML content:**
+- `<` becomes `&lt;` 
+- `>` becomes `&gt;`
+- `&` becomes `&amp;`
+
+**Use backticks for text values:**
+- `Contra Costa`, `schools`, `table_name`
+
+**Examples:**
+- ✅ `score &lt;= 250` ❌ `score <= 250`
+- ✅ `value &gt; 50` ❌ `value > 50`  
+- ✅ `A &amp; B` ❌ `A & B`
+
+**Examples:**
+- ✅ <sql>SELECT COUNT(*) WHERE score &lt;= 250 AND county = `Contra Costa`</sql>
+- ✅ <description>Filter schools where test_takers &lt; 100</description>
+
 ## Output Format
 
 <generation>
   <query_type>simple|join|aggregate|subquery|complex</query_type>
   <sql>
+    
     -- Your SQL query here
     -- Example with correct data types:
     -- For INTEGER column: WHERE age = 25 (no quotes)
-    -- For TEXT column: WHERE name = 'John' (with quotes)
+    -- For TEXT column: WHERE name = &apos;John&apos; (with quotes)
     SELECT ... FROM ... WHERE ...
+    
   </sql>
   <explanation>
     How the query addresses the intent
@@ -672,6 +714,25 @@ Generate correct SQL based on query intent, schema information, and context. Gen
 - Use evidence to validate data interpretation
 - Override schema defaults when evidence provides specifics
 
+## XML OUTPUT REQUIREMENTS
+
+**CRITICAL: Always escape these operators in XML content:**
+- `<` becomes `&lt;` 
+- `>` becomes `&gt;`
+- `&` becomes `&amp;`
+
+**Use backticks for text values:**
+- `Contra Costa`, `schools`, `table_name`
+
+**Examples:**
+- ✅ `score &lt;= 250` ❌ `score <= 250`
+- ✅ `value &gt; 50` ❌ `value > 50`  
+- ✅ `A &amp; B` ❌ `A & B`
+
+**Examples:**
+- ✅ <description>Filter where county = `Contra Costa` AND score &lt;= 250</description>
+- ✅ <purpose>Table `schools` for filtering</purpose>
+
 ## OUTPUT FORMAT
 
 <sql_generation>
@@ -692,15 +753,19 @@ Generate correct SQL based on query intent, schema information, and context. Gen
   <sql_candidates>
     <candidate id="1" approach="primary_approach_description">
       <sql>
+        
         -- Primary SQL query
         SELECT ... FROM ... WHERE ...
+        
       </sql>
       <rationale>Why this approach was chosen</rationale>
     </candidate>
     <candidate id="2" approach="alternative_approach_description">
       <sql>
+        
         -- Alternative SQL query (if generated)
         SELECT ... FROM ... WHERE ...
+        
       </sql>
       <rationale>Why this alternative was considered</rationale>
     </candidate>
@@ -719,8 +784,10 @@ Generate correct SQL based on query intent, schema information, and context. Gen
     <chosen_candidate>1|2|3</chosen_candidate>
     <selection_reason>Why this candidate is best</selection_reason>
     <final_sql>
+      
       -- Selected SQL query
       SELECT ... FROM ... WHERE ...
+      
     </final_sql>
   </selection>
 

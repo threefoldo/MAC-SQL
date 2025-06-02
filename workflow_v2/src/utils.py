@@ -329,6 +329,85 @@ def parse_json(text: str) -> dict:
     return {}
 
 
+def preprocess_xml_content(content: str) -> str:
+    """
+    Preprocess XML content to fix only the issues that cause actual parsing failures.
+    Focus on XML operators, not quotes (LLM can use quotes or backslashes as needed).
+    
+    Args:
+        content: Raw XML content from LLM
+        
+    Returns:
+        Cleaned XML content safe for parsing
+    """
+    
+    # First pass: Handle Unicode mathematical operators globally
+    # These need to be fixed everywhere, not just in specific elements
+    content = content.replace('≤', '&lt;=')
+    content = content.replace('≥', '&gt;=')
+    content = content.replace('≠', '!=')
+    content = content.replace('≈', '~=')
+    
+    def fix_element_content(match):
+        """Fix only XML operators that cause parsing failures"""
+        opening_tag = match.group(1)
+        element_content = match.group(2)
+        closing_tag = match.group(3)
+        
+        # Only fix ASCII XML operators that break parsing: < > <= >= <> &
+        # Handle operators with various contexts (spaces, parentheses, word boundaries, etc.)
+        element_content = re.sub(r'(\s)<=(\s|$|\)|\(|[a-zA-Z])', r'\1&lt;=\2', element_content)
+        element_content = re.sub(r'(\s)>=(\s|$|\)|\(|[a-zA-Z])', r'\1&gt;=\2', element_content)
+        element_content = re.sub(r'(\s)<>(\s|$|\)|\(|[a-zA-Z])', r'\1&lt;&gt;\2', element_content)
+        element_content = re.sub(r'(\s)<(\s|$|\)|\(|[a-zA-Z])', r'\1&lt;\2', element_content)
+        element_content = re.sub(r'(\s)>(\s|$|\)|\(|[a-zA-Z])', r'\1&gt;\2', element_content)
+        
+        # Fix unescaped ampersands (but not already escaped entities)
+        element_content = re.sub(r'&(?!(?:amp|lt|gt|apos|quot);)', '&amp;', element_content)
+        
+        return f"{opening_tag}{element_content}{closing_tag}"
+    
+    # Apply to all XML element content
+    element_pattern = r'(<[^/>]+>)(.*?)(<\/[^>]+>)'
+    content = re.sub(element_pattern, fix_element_content, content, flags=re.DOTALL)
+    
+    return content
+
+
+def validate_xml_content(content: str) -> bool:
+    """
+    Validate XML content for common issues before parsing.
+    Uses only XML entity escaping validation.
+    
+    Args:
+        content: XML content to validate
+        
+    Returns:
+        True if content is likely to parse successfully
+    """
+    # Check for unescaped quotes in elements (common issue)
+    # Look for patterns like >text with 'quotes'< that should be escaped
+    quote_pattern = r'>([^<]*\'[^<]*)<'
+    if re.search(quote_pattern, content):
+        return False
+    
+    # Check for unescaped operators
+    operator_pattern = r'>([^<]*\s<=\s[^<]*)<'
+    if re.search(operator_pattern, content):
+        return False
+    
+    # Check for invalid backslash escapes
+    backslash_pattern = r'>([^<]*\\[<>=]+[^<]*)<'
+    if re.search(backslash_pattern, content):
+        return False
+    
+    # Check for basic XML structure
+    if not re.search(r'<\w+.*?>', content):
+        return False
+    
+    return True
+
+
 def parse_xml(text: str) -> dict:
     """
     Parse XML string containing schema selection information into a Python dictionary.
@@ -612,14 +691,15 @@ def extract_sql_from_text(text: str) -> str:
         Extracted SQL query or empty string if no SQL found
     """
     import re
+    import html
     
     try:
         # Try to extract SQL from JSON
         data = parse_json(text)
         if 'sql' in data:
-            return data['sql']
+            return clean_sql_content(data['sql'])
         if 'final_sql' in data:
-            return data['final_sql']
+            return clean_sql_content(data['final_sql'])
             
         # Try to extract SQL with regex patterns
         sql_patterns = [
@@ -637,19 +717,45 @@ def extract_sql_from_text(text: str) -> str:
                 # Remove any trailing backticks or spaces
                 if sql.endswith('```'):
                     sql = sql[:sql.rfind('```')].strip()
-                return sql
+                return clean_sql_content(sql)
         
         # If no clear SQL pattern, look for any content between backticks
         code_block_pattern = r'```(.*?)```'
         code_blocks = re.findall(code_block_pattern, text, re.DOTALL)
         for block in code_blocks:
             if 'SELECT' in block.upper() or 'WITH' in block.upper():
-                return block.strip()
+                return clean_sql_content(block.strip())
                 
         return ""
     except Exception as e:
         print(f"Error extracting SQL: {str(e)}")
         return ""
+
+
+def clean_sql_content(sql_content: str) -> str:
+    """
+    Clean SQL content by decoding XML entities only.
+    Uses only XML entity escaping, no CDATA support.
+    
+    Args:
+        sql_content: Raw SQL content that may contain XML entities
+        
+    Returns:
+        Cleaned SQL content
+    """
+    import re
+    import html
+    
+    if not sql_content:
+        return ""
+    
+    # Decode XML entities only (no CDATA processing)
+    sql_content = html.unescape(sql_content)
+    
+    # Clean up whitespace
+    sql_content = re.sub(r'\s+', ' ', sql_content.strip())
+    
+    return sql_content
 
 
 # XML Parsing Utilities for Agent Communication
@@ -685,6 +791,58 @@ def extract_xml_content(text: str, tag_name: str) -> Optional[str]:
     return None
 
 
+def clean_xml_content(content: str) -> str:
+    """
+    Clean XML content by decoding XML entities only.
+    Uses only XML entity escaping, no CDATA support.
+    
+    Args:
+        content: Raw XML content that may contain XML entities
+        
+    Returns:
+        Cleaned XML content suitable for XML parsing
+    """
+    import re
+    import html
+    
+    if not content:
+        return content
+    
+    # Decode XML entities
+    content = html.unescape(content)
+    
+    # Convert common HTML code tags to backticks
+    content = re.sub(r'<code>(.*?)</code>', r'`\1`', content, flags=re.DOTALL)
+    content = re.sub(r'<em>(.*?)</em>', r'*\1*', content, flags=re.DOTALL)
+    content = re.sub(r'<strong>(.*?)</strong>', r'**\1**', content, flags=re.DOTALL)
+    
+    # Handle XML entities that might cause parsing issues
+    # Only escape what needs to be escaped for XML parsing
+    def escape_problematic_content(text):
+        # Only escape content that's not already part of valid XML tags
+        # Look for content that contains < or > but isn't part of a valid XML tag
+        lines = text.split('\n')
+        cleaned_lines = []
+        
+        for line in lines:
+            # If line contains XML tags, be careful about escaping
+            if '<' in line and '>' in line:
+                # Check if it's a valid XML line or contains problematic content
+                if not re.match(r'^\s*<[a-zA-Z_][\w\-]*[^>]*>.*</[a-zA-Z_][\w\-]*>\s*$', line) and \
+                   not re.match(r'^\s*<[a-zA-Z_][\w\-]*[^>]*/>\s*$', line) and \
+                   not re.match(r'^\s*<[a-zA-Z_][\w\-]*[^>]*>\s*$', line) and \
+                   not re.match(r'^\s*</[a-zA-Z_][\w\-]*>\s*$', line):
+                    # This line has < > but doesn't look like valid XML
+                    line = line.replace('<', '&lt;').replace('>', '&gt;')
+            cleaned_lines.append(line)
+        
+        return '\n'.join(cleaned_lines)
+    
+    content = escape_problematic_content(content)
+    
+    return content
+
+
 def parse_xml_hybrid(text: str, root_tag: str) -> Optional[Dict[str, Any]]:
     """
     Parse XML with hybrid approach: try full parsing first, then section-by-section.
@@ -707,12 +865,38 @@ def parse_xml_hybrid(text: str, root_tag: str) -> Optional[Dict[str, Any]]:
         logger.error(f"No {root_tag} XML found in text")
         return None
     
+    # Preprocess content to fix XML entity escaping issues  
+    xml_content = preprocess_xml_content(xml_content)
+    xml_content = clean_xml_content(xml_content)
+    
     # Try to parse the entire XML
     try:
         root = ET.fromstring(xml_content)
         return xml_element_to_dict(root)
     except ET.ParseError as e:
         logger.warning(f"Full XML parsing failed: {str(e)}")
+        
+        # Show the specific line and character causing the error
+        error_str = str(e)
+        if 'line' in error_str and 'column' in error_str:
+            import re
+            match = re.search(r'line (\d+), column (\d+)', error_str)
+            if match:
+                line_num = int(match.group(1))
+                col_num = int(match.group(2))
+                lines = xml_content.split('\n')
+                if line_num <= len(lines):
+                    problem_line = lines[line_num - 1]  # Convert to 0-indexed
+                    logger.warning(f"Problem line {line_num}: '{problem_line}'")
+                    if col_num <= len(problem_line):
+                        problem_char = problem_line[col_num-1]
+                        logger.warning(f"Problem character at column {col_num}: '{problem_char}' (ASCII: {ord(problem_char)})")
+                        # Show context around the problem
+                        start = max(0, col_num-10)
+                        end = min(len(problem_line), col_num+10)
+                        context = problem_line[start:end]
+                        logger.warning(f"Context: '{context}'")
+        
         logger.info("Attempting section-by-section parsing...")
         
         # Extract sections and parse individually
@@ -730,6 +914,17 @@ def xml_element_to_dict(element: Any) -> Dict[str, Any]:
         Dictionary representation of the XML element
     """
     import xml.etree.ElementTree as ET
+    import html
+    
+    def decode_xml_entities(value):
+        """Decode XML entities in string values"""
+        if isinstance(value, str):
+            return html.unescape(value)
+        elif isinstance(value, dict):
+            return {k: decode_xml_entities(v) for k, v in value.items()}
+        elif isinstance(value, list):
+            return [decode_xml_entities(item) for item in value]
+        return value
     
     result = {}
     
@@ -767,7 +962,10 @@ def xml_element_to_dict(element: Any) -> Dict[str, Any]:
         if children or element.attrib:
             result['_text'] = text
         else:
-            return text
+            return decode_xml_entities(text)
+    
+    # Decode XML entities in the final result
+    result = decode_xml_entities(result)
     
     return result if (children or element.attrib or not element.text) else ""
 
@@ -810,8 +1008,10 @@ def parse_xml_sections(xml_content: str, root_tag: str) -> Dict[str, Any]:
         tag_name = section_match.group(1)
         
         try:
+            # Clean the section XML before parsing
+            cleaned_section_xml = clean_xml_content(section_xml)
             # Try to parse this section
-            section_element = ET.fromstring(section_xml)
+            section_element = ET.fromstring(cleaned_section_xml)
             result[tag_name] = xml_element_to_dict(section_element)
         except ET.ParseError:
             logger.warning(f"Failed to parse section {tag_name}, using regex extraction")
@@ -850,6 +1050,20 @@ def extract_section_with_regex(section_xml: str, tag_name: str) -> Any:
     if content_match:
         inner = content_match.group(1).strip()
         
+        # Special handling for SQL-related sections
+        if tag_name in ['sql', 'final_sql', 'selection']:
+            # For SQL sections, look for common SQL-related patterns
+            sql_patterns = [
+                r'<sql>\s*(.*?)\s*</sql>',  # Plain SQL
+                r'<final_sql>\s*(.*?)\s*</final_sql>',  # Plain final_sql
+            ]
+            
+            for pattern in sql_patterns:
+                sql_match = re.search(pattern, inner, re.DOTALL | re.IGNORECASE)
+                if sql_match:
+                    sql_content = sql_match.group(1).strip()
+                    return clean_sql_content(sql_content)
+        
         # Check if it contains sub-elements
         if '<' in inner and '>' in inner:
             # Has sub-elements, extract them
@@ -858,6 +1072,10 @@ def extract_section_with_regex(section_xml: str, tag_name: str) -> Any:
             for match in re.finditer(element_pattern, inner, re.DOTALL):
                 sub_tag = match.group(1)
                 sub_content = match.group(2).strip()
+                
+                # Clean SQL content for SQL-related tags
+                if sub_tag in ['sql', 'final_sql']:
+                    sub_content = clean_sql_content(sub_content)
                 
                 if sub_tag in sub_dict:
                     if not isinstance(sub_dict[sub_tag], list):

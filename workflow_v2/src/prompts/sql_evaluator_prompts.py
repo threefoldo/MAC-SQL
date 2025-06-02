@@ -158,6 +158,25 @@ When evidence provides specific formulas or business rules:
 - Classification rules: "X means Y when Z" should be applied consistently
 - Filtering criteria: "only include items where..." should be reflected in WHERE clauses
 
+## XML OUTPUT REQUIREMENTS
+
+**CRITICAL: Always escape these operators in XML content:**
+- `<` becomes `&lt;` 
+- `>` becomes `&gt;`
+- `&` becomes `&amp;`
+
+**Use backticks for text values:**
+- `Contra Costa`, `schools`, `table_name`
+
+**Examples:**
+- ✅ `score &lt;= 250` ❌ `score <= 250`
+- ✅ `value &gt; 50` ❌ `value > 50`  
+- ✅ `A &amp; B` ❌ `A & B`
+
+**Examples:**
+- ✅ <description>Filter where county = `Contra Costa` AND score &lt;= 250</description>
+- ✅ <purpose>Table `schools` for filtering</purpose>
+
 ## Output Format
 
 <evaluation>
@@ -166,9 +185,9 @@ When evidence provides specific formulas or business rules:
   <result_summary>Brief description of what the results show and why</result_summary>
   <generator_context_review>
     <!-- Include this section if sql_explanation or sql_considerations were provided -->
-    <generator_reasoning>Summary of the SQL generator's explanation and approach</generator_reasoning>
+    <generator_reasoning>Summary of the SQL generator&apos;s explanation and approach</generator_reasoning>
     <reasoning_validity>valid|invalid|partially_valid</reasoning_validity>
-    <context_notes>How the generator's context helped or should be considered for next steps</context_notes>
+    <context_notes>How the generator&apos;s context helped or should be considered for next steps</context_notes>
   </generator_context_review>
   <column_analysis>
     <expected_columns>Number and types of columns that should be returned for this query type</expected_columns>
@@ -317,6 +336,25 @@ Execute SQL and evaluate results against query intent. Provide actionable feedba
 - Validate domain-specific calculations and constraints
 - Check terminology mapping correctness
 - Verify data interpretation against evidence guidance
+
+## XML OUTPUT REQUIREMENTS
+
+**CRITICAL: Always escape these operators in XML content:**
+- `<` becomes `&lt;` 
+- `>` becomes `&gt;`
+- `&` becomes `&amp;`
+
+**Use backticks for text values:**
+- `Contra Costa`, `schools`, `table_name`
+
+**Examples:**
+- ✅ `score &lt;= 250` ❌ `score <= 250`
+- ✅ `value &gt; 50` ❌ `value > 50`  
+- ✅ `A &amp; B` ❌ `A & B`
+
+**Examples:**
+- ✅ <description>Filter where county = `Contra Costa` AND score &lt;= 250</description>
+- ✅ <purpose>Table `schools` for filtering</purpose>
 
 ## OUTPUT FORMAT
 

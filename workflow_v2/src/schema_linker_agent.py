@@ -50,26 +50,29 @@ class SchemaLinkerAgent(BaseMemoryAgent):
     def _log_linking_summary(self, linking_result: Dict[str, Any]) -> None:
         """Log a concise summary of the linking result."""
         # Log tables if present
-        if "selected_tables" in linking_result:
-            tables = linking_result["selected_tables"].get("table", [])
-            if not isinstance(tables, list):
-                tables = [tables] if tables else []
-            
-            if tables:
-                self.logger.info(f"Linked {len(tables)} table(s):")
-                for table in tables:
-                    if isinstance(table, dict):
-                        self.logger.info(f"  - {table.get('name', 'unknown')}: {table.get('purpose', '')}")
+        if "selected_tables" in linking_result and linking_result["selected_tables"]:
+            selected_tables = linking_result["selected_tables"]
+            if isinstance(selected_tables, dict) and "table" in selected_tables:
+                tables = selected_tables["table"]
+                if not isinstance(tables, list):
+                    tables = [tables] if tables else []
+                
+                if tables:
+                    self.logger.info(f"Linked {len(tables)} table(s):")
+                    for table in tables:
+                        if isinstance(table, dict):
+                            self.logger.info(f"  - {table.get('name', 'unknown')}: {table.get('purpose', '')}")
         
         # Log joins if present
-        if "joins" in linking_result:
+        if "joins" in linking_result and linking_result["joins"]:
             joins_data = linking_result["joins"]
-            if isinstance(joins_data, dict):
-                joins = joins_data.get("join", [])
+            joins = []
+            if isinstance(joins_data, dict) and "join" in joins_data:
+                joins = joins_data["join"]
                 if not isinstance(joins, list):
                     joins = [joins] if joins else []
-            else:
-                joins = []
+            elif isinstance(joins_data, list):
+                joins = joins_data
             
             if joins:
                 self.logger.info(f"Joins: {len(joins)}")
@@ -212,20 +215,21 @@ class SchemaLinkerAgent(BaseMemoryAgent):
                         self.logger.info(f"Query intent: {node.intent}")
                     
                     # Log column discovery process if available
-                    if linking_result.get("column_discovery"):
+                    column_discovery = linking_result.get("column_discovery")
+                    if column_discovery:
                         self.logger.info("Column Discovery Process:")
-                        column_discovery = linking_result["column_discovery"]
                         self.logger.info(f"  {column_discovery}")
                     
                     # Log single-table analysis
-                    if linking_result.get("single_table_possible") is not None:
-                        if linking_result.get("single_table_possible"):
-                            best_table = linking_result.get("best_single_table", "")
-                            self.logger.info(f"✓ Single-table solution POSSIBLE using table: {best_table}")
-                            if linking_result.get("single_table_solution"):
-                                self.logger.info("✓ Single-table solution SELECTED")
-                        else:
-                            self.logger.info("✗ Single-table solution NOT possible - multiple tables required")
+                    single_table_analysis = linking_result.get("single_table_analysis", {})
+                    if isinstance(single_table_analysis, dict):
+                        single_table_possible = single_table_analysis.get("possible")
+                        if single_table_possible is not None:
+                            if str(single_table_possible).lower() in ["true", "yes"]:
+                                best_table = single_table_analysis.get("best_single_table", "")
+                                self.logger.info(f"✓ Single-table solution POSSIBLE using table: {best_table}")
+                            else:
+                                self.logger.info("✗ Single-table solution NOT possible - multiple tables required")
                     
                     # Log summary based on linking_result
                     self._log_linking_summary(linking_result)
@@ -255,7 +259,7 @@ class SchemaLinkerAgent(BaseMemoryAgent):
         # Include database description if available
         description = await self.schema_manager.get_database_description()
         if description:
-            xml_parts.append(f"  <description><![CDATA[{description}]]></description>")
+            xml_parts.append(f"  <description>{description}</description>")
         
         xml_parts.append(f"  <total_tables>{len(tables)}</total_tables>")
         xml_parts.append("  <tables>")
@@ -288,8 +292,8 @@ class SchemaLinkerAgent(BaseMemoryAgent):
                     # Limit to first 10 values for readability
                     for value in col_info.typicalValues[:10]:
                         if value is not None:
-                            # Use CDATA to handle special characters in values
-                            xml_parts.append(f'            <value><![CDATA[{value}]]></value>')
+                            # Use XML entity escaping for special characters in values
+                            xml_parts.append(f'            <value>{html.escape(str(value))}</value>')
                         else:
                             xml_parts.append('            <value null="true"/>')
                     if len(col_info.typicalValues) > 10:
@@ -307,8 +311,75 @@ class SchemaLinkerAgent(BaseMemoryAgent):
         return '\n'.join(xml_parts)
     
     def _parse_linking_xml(self, output: str) -> Optional[Dict[str, Any]]:
-        """Parse the schema linking XML output using hybrid approach"""
-        # Use the hybrid parsing utility
-        parsed = parse_xml_hybrid(output, 'schema_linking')
-        return parsed
+        """Parse the schema linking XML output using hybrid approach with robust fallback"""
+        try:
+            # Use the hybrid parsing utility
+            parsed = parse_xml_hybrid(output, 'schema_linking')
+            if parsed:
+                # Validate and clean the parsed result
+                return self._validate_and_clean_linking_result(parsed)
+            
+            # If XML parsing failed, try fallback extraction
+            return self._extract_linking_fallback(output)
+            
+        except Exception as e:
+            self.logger.error(f"Error parsing schema linking XML: {str(e)}", exc_info=True)
+            # Try fallback extraction even on exceptions
+            return self._extract_linking_fallback(output)
+    
+    def _validate_and_clean_linking_result(self, parsed: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate and clean parsed schema linking result"""
+        try:
+            # Ensure essential sections exist
+            if not parsed.get("selected_tables"):
+                self.logger.warning("No selected_tables found in schema linking output")
+                # Try to create minimal structure
+                parsed["selected_tables"] = {}
+            
+            # Validate selected_tables structure
+            selected_tables = parsed.get("selected_tables")
+            if isinstance(selected_tables, dict) and "table" in selected_tables:
+                # Ensure table data is in list format
+                table_data = selected_tables["table"]
+                if not isinstance(table_data, list):
+                    if isinstance(table_data, dict):
+                        selected_tables["table"] = [table_data]
+                    else:
+                        self.logger.warning(f"Unexpected table data format: {type(table_data)}")
+                        selected_tables["table"] = []
+            
+            # Set default values for missing fields
+            parsed.setdefault("joins", [])
+            parsed.setdefault("column_discovery", "")
+            parsed.setdefault("single_table_analysis", {})
+            
+            return parsed
+            
+        except Exception as e:
+            self.logger.warning(f"Error validating linking result: {str(e)}")
+            return parsed  # Return as-is if validation fails
+    
+    def _extract_linking_fallback(self, output: str) -> Optional[Dict[str, Any]]:
+        """Fallback extraction when XML parsing fails completely"""
+        try:
+            # Try to extract minimal table information using regex
+            table_matches = re.findall(r'<table name="([^"]+)"', output)
+            if table_matches:
+                fallback_result = {
+                    "selected_tables": {
+                        "table": [{"name": name} for name in table_matches]
+                    },
+                    "joins": [],
+                    "column_discovery": "Extracted using fallback method",
+                    "single_table_analysis": {}
+                }
+                self.logger.info(f"Fallback extraction found {len(table_matches)} tables")
+                return fallback_result
+            
+            self.logger.warning("No usable schema linking information found in output")
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Error in fallback linking extraction: {str(e)}")
+            return None
     

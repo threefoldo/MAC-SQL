@@ -488,44 +488,86 @@ class SQLEvaluatorAgent(BaseMemoryAgent):
         return result
     
     def _parse_evaluation_xml(self, output: str) -> Optional[Dict[str, Any]]:
-        """Parse the evaluation XML output using hybrid approach"""
-        # Try v1.2 format first
-        result = parse_xml_hybrid(output, 'sql_evaluation')
-        if result:
-            # Convert v1.2 nested structure to flat structure expected by rest of code
-            converted = {}
-            if 'intent_alignment' in result:
-                converted['answers_intent'] = result['intent_alignment'].get('answers_intent', 'unknown')
-                converted['query_type'] = result['intent_alignment'].get('query_type', 'unknown')
-            if 'result_classification' in result:
-                converted['result_quality'] = result['result_classification'].get('overall_assessment', 'unknown')
-                converted['confidence_score'] = result['result_classification'].get('confidence_score', 0.5)
-                converted['continue_workflow'] = result['result_classification'].get('continue_workflow', 'yes')
-                converted['retry_recommended'] = result['result_classification'].get('retry_recommended', 'no')
-            if 'execution_analysis' in result:
-                converted['execution_status'] = result['execution_analysis'].get('status', 'unknown')
-                converted['row_count'] = result['execution_analysis'].get('row_count', 0)
-                converted['column_count'] = result['execution_analysis'].get('column_count', 0)
-            # Merge other top-level fields
-            for key, value in result.items():
-                if key not in converted:
-                    converted[key] = value
-            result = converted
-        else:
-            # Fallback to v1.0/v1.1 format
-            result = parse_xml_hybrid(output, 'evaluation')
-        
-        if result:
-            # Convert confidence_score to float if it exists
-            if result.get("confidence_score"):
-                try:
-                    result["confidence_score"] = float(result["confidence_score"])
-                except (ValueError, TypeError):
-                    result["confidence_score"] = 0.5  # Default fallback
+        """Parse the evaluation XML output using hybrid approach with robust error handling"""
+        try:
+            # Try v1.2 format first
+            result = parse_xml_hybrid(output, 'sql_evaluation')
+            if result:
+                # Convert v1.2 nested structure to flat structure expected by rest of code
+                converted = {}
+                
+                # Safe extraction from intent_alignment with type checking
+                if 'intent_alignment' in result:
+                    intent_alignment = result['intent_alignment']
+                    if isinstance(intent_alignment, dict):
+                        converted['answers_intent'] = intent_alignment.get('answers_intent', 'unknown')
+                        converted['query_type'] = intent_alignment.get('query_type', 'unknown')
+                    else:
+                        self.logger.warning(f"intent_alignment is not a dict: {type(intent_alignment)}")
+                        converted['answers_intent'] = 'unknown'
+                        converted['query_type'] = 'unknown'
+                
+                # Safe extraction from result_classification with type checking
+                if 'result_classification' in result:
+                    result_classification = result['result_classification']
+                    if isinstance(result_classification, dict):
+                        converted['result_quality'] = result_classification.get('overall_assessment', 'unknown')
+                        converted['confidence_score'] = result_classification.get('confidence_score', 0.5)
+                        converted['continue_workflow'] = result_classification.get('continue_workflow', 'yes')
+                        converted['retry_recommended'] = result_classification.get('retry_recommended', 'no')
+                    else:
+                        self.logger.warning(f"result_classification is not a dict: {type(result_classification)}")
+                        converted['result_quality'] = 'unknown'
+                        converted['confidence_score'] = 0.5
+                        converted['continue_workflow'] = 'yes'
+                        converted['retry_recommended'] = 'no'
+                
+                # Safe extraction from execution_analysis with type checking
+                if 'execution_analysis' in result:
+                    execution_analysis = result['execution_analysis']
+                    if isinstance(execution_analysis, dict):
+                        converted['execution_status'] = execution_analysis.get('status', 'unknown')
+                        converted['row_count'] = execution_analysis.get('row_count', 0)
+                        converted['column_count'] = execution_analysis.get('column_count', 0)
+                    else:
+                        self.logger.warning(f"execution_analysis is not a dict: {type(execution_analysis)}")
+                        converted['execution_status'] = 'unknown'
+                        converted['row_count'] = 0
+                        converted['column_count'] = 0
+                
+                # Safely merge other top-level fields
+                for key, value in result.items():
+                    if key not in converted and key not in ['intent_alignment', 'result_classification', 'execution_analysis']:
+                        converted[key] = value
+                
+                result = converted
             else:
-                result["confidence_score"] = 0.5
+                # Fallback to v1.0/v1.1 format
+                result = parse_xml_hybrid(output, 'evaluation')
             
-            return result
+            if result:
+                # Safely convert confidence_score to float with proper error handling
+                confidence_score = result.get("confidence_score", 0.5)
+                try:
+                    if confidence_score is not None and str(confidence_score).strip():
+                        result["confidence_score"] = float(confidence_score)
+                    else:
+                        result["confidence_score"] = 0.5
+                except (ValueError, TypeError) as e:
+                    self.logger.warning(f"Failed to convert confidence_score '{confidence_score}' to float: {str(e)}")
+                    result["confidence_score"] = 0.5
+                
+                # Ensure all critical fields have defaults
+                result.setdefault('answers_intent', 'unknown')
+                result.setdefault('result_quality', 'unknown')
+                result.setdefault('execution_status', 'unknown')
+                result.setdefault('row_count', 0)
+                result.setdefault('column_count', 0)
+                
+                return result
+            
+        except Exception as e:
+            self.logger.error(f"Error in XML parsing: {str(e)}", exc_info=True)
         
         return None
     

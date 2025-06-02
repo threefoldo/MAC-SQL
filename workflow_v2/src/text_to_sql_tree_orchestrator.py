@@ -47,6 +47,7 @@ from schema_linker_agent import SchemaLinkerAgent
 from sql_generator_agent import SQLGeneratorAgent
 from sql_evaluator_agent import SQLEvaluatorAgent
 from task_status_checker import TaskStatusChecker
+from utils import clean_sql_content
 
 # Memory types - updated imports based on actual content
 from memory_content_types import (
@@ -362,9 +363,11 @@ class TextToSQLTreeOrchestrator:
         if root_id and root_id in tree["nodes"]:
             root_node = tree["nodes"][root_id]
             if root_node.get("generation") and isinstance(root_node["generation"], dict):
-                final_sql = root_node["generation"].get("sql")
+                raw_sql = root_node["generation"].get("sql")
+                final_sql = clean_sql_content(raw_sql) if raw_sql else None
             elif root_node.get("sql"):
-                final_sql = root_node.get("sql")
+                raw_sql = root_node.get("sql")
+                final_sql = clean_sql_content(raw_sql) if raw_sql else None
         
         # If root has no SQL, find the best SQL from any child node
         if not final_sql or final_sql.startswith("SELECT 'Failed"):
@@ -372,10 +375,15 @@ class TextToSQLTreeOrchestrator:
             for node_id, node_data in tree["nodes"].items():
                 # Extract SQL from this node
                 node_sql = None
+                raw_sql = None
                 if node_data.get("generation") and isinstance(node_data["generation"], dict):
-                    node_sql = node_data["generation"].get("sql")
+                    raw_sql = node_data["generation"].get("sql")
                 elif node_data.get("sql"):
-                    node_sql = node_data.get("sql")
+                    raw_sql = node_data.get("sql")
+                
+                # Clean the SQL before evaluation
+                if raw_sql:
+                    node_sql = clean_sql_content(raw_sql)
                 
                 # Evaluate quality if we have SQL
                 if node_sql and node_sql.strip() and not node_sql.startswith("SELECT 'Failed"):
