@@ -21,6 +21,8 @@ from memory_content_types import (
 )
 from utils import extract_sql_from_text, parse_xml_hybrid, clean_sql_content
 from prompts import SQL_CONSTRAINTS
+from autogen_core.tools import FunctionTool
+from sql_generator_tools import create_sql_generator_tools
 
 
 class SQLGeneratorAgent(BaseMemoryAgent):
@@ -47,6 +49,28 @@ class SQLGeneratorAgent(BaseMemoryAgent):
         from prompts.prompt_loader import PromptLoader
         loader = PromptLoader()
         return loader.get_prompt("sql_generator", version="v1.2")
+    
+    def _create_agent(self):
+        """Override to create the AutoGen AssistantAgent with SQL tools"""
+        # Get SQL generator tools
+        tool_configs = create_sql_generator_tools(self.memory, self.logger)
+        tools = [FunctionTool(
+            func=config["function"],
+            description=config["description"],
+            name=config["name"]
+        ) for config in tool_configs]
+        
+        # Import here to avoid circular imports
+        from autogen_agentchat.agents import AssistantAgent
+        
+        self.assistant = AssistantAgent(
+            name=self.agent_name,
+            system_message=self._build_system_message(),
+            model_client=self.model_client,
+            tools=tools
+        )
+        self.logger.debug(f"Created AssistantAgent: {self.agent_name} with {len(tools)} tools")
+        self.logger.info(f"SQL Generator tools: {[t.name for t in tools]}")
     
     async def _reader_callback(self, memory: KeyValueMemory, task: str, cancellation_token) -> Dict[str, Any]:
         """Read context from memory before generating SQL"""
@@ -83,14 +107,6 @@ class SQLGeneratorAgent(BaseMemoryAgent):
         # Convert NodeOperation objects to dictionaries
         history_dicts = [op.to_dict() for op in history] if history else []
         
-        # Get SQL evaluation analysis if available
-        analysis_key = f"node_{current_node_id}_analysis"
-        evaluation_analysis = await self.memory.get(analysis_key)
-        
-        # Get refiner prompt if available
-        refiner_key = f"node_{current_node_id}_refiner_prompt"
-        refiner_prompt = await self.memory.get(refiner_key)
-        
         # Get database-specific success patterns
         database_name = await self._get_database_name()
         success_patterns = await self._get_success_patterns(database_name)
@@ -118,8 +134,6 @@ class SQLGeneratorAgent(BaseMemoryAgent):
             "evidence": evidence if evidence else None,  # Make evidence explicit
             "children_nodes": json.dumps(children_info, indent=2) if children_info else None,
             "node_history": json.dumps(history_dicts, indent=2) if history_dicts else None,  # ALL history
-            "sql_evaluation_analysis": json.dumps(evaluation_analysis, indent=2) if evaluation_analysis else None,
-            "refiner_prompt": refiner_prompt if refiner_prompt else None,
             "strategic_guidance": strategic_guidance if strategic_guidance else None,  # INTELLIGENT LEARNING
             "success_patterns": success_patterns,  # DYNAMIC SUCCESS PATTERNS
             "failure_avoidance": failure_avoidance,  # DYNAMIC FAILURE AVOIDANCE
@@ -140,14 +154,48 @@ class SQLGeneratorAgent(BaseMemoryAgent):
         if not result.messages:
             self.logger.warning("No messages in result")
             return
+        
+        # Find the last assistant message that contains final XML output (not tool calls)
+        last_assistant_message = None
+        has_tool_calls = False
+        
+        for message in reversed(result.messages):
+            # Check if this message contains tool calls
+            if hasattr(message, 'content') and isinstance(message.content, list):
+                has_tool_calls = True
+                continue
+                
+            # Check for assistant messages with string content (potential final response)
+            is_assistant = False
+            if hasattr(message, 'source') and message.source == self.agent_name:
+                is_assistant = True
+            elif hasattr(message, 'role') and message.role == 'assistant':
+                is_assistant = True
+            elif not hasattr(message, 'source') and isinstance(message.content, str):
+                is_assistant = True
+                
+            if is_assistant and isinstance(message.content, str):
+                # Check if this looks like a final response (contains XML)
+                if '<sql_generation>' in message.content or 'SELECT' in message.content.upper():
+                    last_assistant_message = message.content
+                    break
+                
+        # If we found tool calls but no final response, this is an incomplete conversation
+        if has_tool_calls and not last_assistant_message:
+            self.logger.info("Conversation still in progress - tool calls detected but no final response yet")
+            return
+                
+        if not last_assistant_message:
+            self.logger.warning("No final assistant message found in result")
+            return
             
-        last_message = result.messages[-1].content
         # Log the raw output for debugging
-        self.logger.info(f"Raw LLM output: {last_message}")
+        self.logger.info(f"Raw LLM output: {last_assistant_message}")
+        self.logger.info(f"Found final response in conversation with {len(result.messages)} total messages")
         
         try:
             # Parse the XML output
-            generation_result = self._parse_generation_xml(last_message)
+            generation_result = self._parse_generation_xml(last_assistant_message)
             
             if generation_result and generation_result.get("sql"):
                 sql = generation_result["sql"]
@@ -216,20 +264,14 @@ class SQLGeneratorAgent(BaseMemoryAgent):
     
     
     def _parse_generation_xml(self, output: str) -> Optional[Dict[str, Any]]:
-        """Parse the SQL generation XML output using hybrid approach with robust error handling"""
+        """Parse the SQL generation XML output - v1.2 format only"""
         try:
-            # Try v1.2 format first
+            # Parse v1.2 format with sql_generation tag
             result = parse_xml_hybrid(output, 'sql_generation')
-            if result and 'selection' in result:
-                converted = self._convert_v12_to_v11_format(result)
+            if result:
+                converted = self._convert_v12_format(result)
                 if converted:
                     return converted
-            
-            # Fallback to v1.1 format
-            result = parse_xml_hybrid(output, 'generation')
-            if result:
-                # Validate and clean v1.1 format
-                return self._validate_v11_format(result)
             
             # Last resort: manual extraction
             return self._extract_sql_fallback(output)
@@ -239,50 +281,58 @@ class SQLGeneratorAgent(BaseMemoryAgent):
             # Try fallback extraction
             return self._extract_sql_fallback(output)
     
-    def _convert_v12_to_v11_format(self, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Safely convert v1.2 format to v1.1 compatible format"""
+    def _convert_v12_format(self, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Convert v1.2 format to internal format"""
         try:
-            selection = result.get('selection')
-            if not selection:
+            # Extract from final_selection section
+            final_selection = result.get('final_selection')
+            if not final_selection:
                 return None
                 
             converted = {}
             
-            if isinstance(selection, str):
-                # Handle case where selection is parsed as string
-                sql = self._extract_sql_from_string(selection)
-                converted = {
-                    'sql': sql,
-                    'query_type': 'simple',
-                    'explanation': 'Extracted from string content',
-                    'considerations': 'Selection was parsed as string, extracted SQL content'
-                }
-            elif isinstance(selection, dict):
-                # Safe extraction from nested structures
-                converted['sql'] = selection.get('final_sql', '')
-                converted['explanation'] = selection.get('selection_reason', '')
+            # Extract SQL from final_selection
+            if isinstance(final_selection, dict):
+                converted['sql'] = final_selection.get('final_sql', '')
+                converted['explanation'] = final_selection.get('selection_reason', '')
                 
-                # Safe extraction of nested fields
+                # Get query type from strategy_planning
                 strategy_planning = result.get('strategy_planning', {})
                 if isinstance(strategy_planning, dict):
                     converted['query_type'] = strategy_planning.get('complexity_level', 'simple')
-                    column_requirements = strategy_planning.get('column_requirements', '')
                 else:
                     converted['query_type'] = 'simple'
-                    column_requirements = ''
                 
+                # Get considerations from context_analysis
                 context_analysis = result.get('context_analysis', {})
                 if isinstance(context_analysis, dict):
                     query_intent = context_analysis.get('query_intent', '')
+                    converted['considerations'] = f"v1.2 format - Context: {query_intent}"
                 else:
-                    query_intent = ''
-                
-                converted['considerations'] = f"Context: {query_intent}; Strategy: {column_requirements}"
+                    converted['considerations'] = 'Generated using v1.2 format'
             
-            # Merge other top-level fields safely
-            for key, value in result.items():
-                if key not in converted and value is not None:
-                    converted[key] = value
+            # Clean up SQL if needed
+            if converted.get('sql'):
+                converted['sql'] = clean_sql_content(converted['sql'])
+            
+            # Extract execution results if present
+            execution_results = result.get('execution_results', {})
+            if isinstance(execution_results, dict):
+                if execution_results.get('execution_status') == 'success':
+                    converted['execution_result'] = {
+                        'status': 'success',
+                        'row_count': execution_results.get('row_count', 0),
+                        'columns': [],  # Not captured in XML, would need tool response
+                        'data': []      # Not captured in XML, would need tool response
+                    }
+                elif execution_results.get('execution_status') == 'error':
+                    converted['execution_result'] = {
+                        'status': 'error',
+                        'error': execution_results.get('corrections_applied', 'Execution failed'),
+                        'row_count': 0,
+                        'columns': [],
+                        'data': []
+                    }
             
             return converted
             
@@ -290,28 +340,6 @@ class SQLGeneratorAgent(BaseMemoryAgent):
             self.logger.warning(f"Error converting v1.2 format: {str(e)}")
             return None
     
-    def _validate_v11_format(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate and clean v1.1 format result"""
-        try:
-            # Clean up SQL - handle XML entities
-            if result.get("sql"):
-                result["sql"] = clean_sql_content(result["sql"])
-            
-            # Ensure required fields exist
-            if not result.get("sql"):
-                self.logger.warning("No SQL found in generation result")
-                return None
-            
-            # Set defaults for missing fields
-            result.setdefault("query_type", "simple")
-            result.setdefault("explanation", "")
-            result.setdefault("considerations", "")
-            
-            return result
-            
-        except Exception as e:
-            self.logger.warning(f"Error validating v1.1 format: {str(e)}")
-            return result  # Return as-is if validation fails
     
     def _extract_sql_from_string(self, selection_str: str) -> str:
         """Extract SQL from string content using multiple patterns"""

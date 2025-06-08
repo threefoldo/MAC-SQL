@@ -94,92 +94,15 @@ class SQLEvaluatorAgent(BaseMemoryAgent):
         if query_type:
             context["query_type"] = query_type
         
-        # Get execution result if available from evaluation field
-        if node.evaluation and "execution_result" in node.evaluation:
+        # Get execution result from generation field (SQL Generator now executes SQL)
+        if node.generation and "execution_result" in node.generation:
+            context["execution_result"] = self._format_execution_result(node.generation["execution_result"])
+        # Fallback to evaluation field for backward compatibility
+        elif node.evaluation and "execution_result" in node.evaluation:
             context["execution_result"] = self._format_execution_result(node.evaluation["execution_result"])
         else:
-            # Execute SQL if we have it
-            sql = node.generation.get("sql") if node.generation else None
-            if sql:
-                # Get task context to get database name
-                task_context = await self.task_manager.get()
-                if not task_context:
-                    self.logger.error("No task context found")
-                    return context
-                
-                db_name = task_context.databaseName
-                if not db_name:
-                    self.logger.error("No database name in task context")
-                    return context
-                
-                # Get data path and dataset name from database schema
-                schema_summary = await self.schema_manager.get_schema_summary()
-                data_path = None
-                dataset_name = "bird"  # Default to bird
-                
-                if schema_summary and "metadata" in schema_summary:
-                    metadata = schema_summary["metadata"]
-                    data_path = metadata.get("data_path")
-                    dataset_name = metadata.get("dataset_name", "bird")
-                
-                if not data_path:
-                    # Try to infer from common patterns
-                    self.logger.warning("No data_path in database schema metadata, using default")
-                    data_path = "/home/norman/work/text-to-sql/MAC-SQL/data/bird"
-                
-                self.logger.debug(f"Executing SQL for node {node_id} on database {db_name}")
-                self.logger.debug(f"Using data_path: {data_path}, dataset_name: {dataset_name}")
-                
-                executor = SQLExecutor(data_path, dataset_name)
-                
-                try:
-                    result_dict = executor.execute_sql(sql, db_name)
-                    
-                    if result_dict.get("error"):
-                        execution_result = {
-                            "status": "error",
-                            "error": result_dict["error"],
-                            "row_count": 0,
-                            "columns": [],
-                            "data": []
-                        }
-                    else:
-                        execution_result = {
-                            "status": "success",
-                            "columns": result_dict.get("column_names", []),
-                            "data": result_dict.get("data", []),
-                            "row_count": len(result_dict.get("data", [])),
-                            "execution_time": result_dict.get("execution_time")
-                        }
-                    
-                    context["execution_result"] = execution_result
-                    
-                    # Update node with execution result
-                    exec_result_obj = ExecutionResult(
-                        data=execution_result["data"],
-                        rowCount=execution_result["row_count"],
-                        error=execution_result.get("error")
-                    )
-                    success = execution_result["status"] == "success"
-                    await self.tree_manager.update_node_result(node_id, exec_result_obj, success)
-                    
-                    # Also store in evaluation field
-                    await self.tree_manager.update_node(node_id, {
-                        "evaluation": {
-                            "execution_result": execution_result
-                        }
-                    })
-                    
-                except Exception as e:
-                    self.logger.error(f"Error executing SQL: {str(e)}", exc_info=True)
-                    execution_result = {
-                        "status": "error",
-                        "error": str(e),
-                        "row_count": 0,
-                        "columns": [],
-                        "data": []
-                    }
-                    context["execution_result"] = execution_result
+            # SQL should already be executed by SQL Generator
+            self.logger.warning(f"No execution result found for node {node_id} - SQL Generator should have executed it")
         
         self.logger.debug(f"SQL evaluator context prepared with result status: {context.get('execution_result', {}).get('status', 'unknown')}")
         self.logger.info(f"Full context: {context}")

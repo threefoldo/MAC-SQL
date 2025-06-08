@@ -90,9 +90,7 @@ class TestSQLEvaluatorIntelligentLearning:
                 LIMIT 3
                 """.strip(),
                 "explanation": "Join schools with test scores, calculate average, rank by highest scores",
-                "query_type": "aggregation_with_ranking"
-            },
-            evaluation={
+                "query_type": "aggregation_with_ranking",
                 "execution_result": {
                     "status": "success",
                     "row_count": 3,
@@ -103,7 +101,8 @@ class TestSQLEvaluatorIntelligentLearning:
                         ["Jefferson Middle School", 87.8]
                     ]
                 }
-            }
+            },
+            evaluation={}
         )
         
         # Store in query tree
@@ -175,15 +174,14 @@ class TestSQLEvaluatorIntelligentLearning:
                 WHERE f.total_funding > (SELECT AVG(invalid_column) FROM funding)
                 """.strip(),
                 "explanation": "Find schools with above-average funding",
-                "query_type": "filtering_with_subquery"
-            },
-            evaluation={
+                "query_type": "filtering_with_subquery",
                 "execution_result": {
                     "status": "error",
                     "error_message": "Column 'invalid_column' doesn't exist",
                     "error_type": "column_not_found"
                 }
-            }
+            },
+            evaluation={}
         )
         
         # Store in query tree

@@ -567,8 +567,8 @@ Decompose user queries into executable steps AND specify exact expected output f
 - ✅ `A &amp; B` ❌ `A & B`
 
 **Examples:**
-- ✅ <description>Filter where county = `Contra Costa` AND score &lt;= 250</description>
-- ✅ <purpose>Table `schools` for filtering</purpose>
+- ✅ <description>Filter where county = 'Contra Costa' AND score &lt;= 250</description>
+- ✅ <purpose>Table schools for filtering</purpose>
 
 ## OUTPUT FORMAT
 

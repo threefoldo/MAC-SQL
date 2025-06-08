@@ -280,14 +280,12 @@ class TestSQLEvaluatorAgent:
             row_count=0
         )
         
+        # Store execution result in generation field (SQL Generator now executes SQL)
         tree_manager = QueryTreeManager(memory)
-        await tree_manager.update_node_result(node_id, execution_result, success=True)
-        # Also store in evaluation field
-        await tree_manager.update_node(node_id, {
-            "evaluation": {
-                "execution_result": execution_result.to_dict()
-            }
-        })
+        node = await tree_manager.get_node(node_id)
+        generation = node.generation or {}
+        generation["execution_result"] = execution_result.to_dict()
+        await tree_manager.update_node(node_id, {"generation": generation})
         
         # Initialize execution_analysis memory as orchestrator would
         from datetime import datetime
@@ -339,14 +337,12 @@ class TestSQLEvaluatorAgent:
         execution_result = self.create_mock_execution_result(
             data=[{"count": 100}]
         )
+        # Store execution result in generation field (SQL Generator now executes SQL)
         tree_manager = QueryTreeManager(memory)
-        await tree_manager.update_node_result(node_id, execution_result, success=True)
-        # Also store in evaluation field
-        await tree_manager.update_node(node_id, {
-            "evaluation": {
-                "execution_result": execution_result.to_dict()
-            }
-        })
+        node = await tree_manager.get_node(node_id)
+        generation = node.generation or {}
+        generation["execution_result"] = execution_result.to_dict()
+        await tree_manager.update_node(node_id, {"generation": generation})
         
         agent = SQLEvaluatorAgent(memory, llm_config={"model_name": "gpt-4o"})
         

@@ -80,14 +80,14 @@ class TestFailurePatternAgentWithLLM:
                 ORDER BY f.Total_Funding DESC
                 """.strip(),
                 "explanation": "Join schools with funding data and filter for high funding amounts",
-                "query_type": "filtering_with_join"
-            },
-            evaluation={
+                "query_type": "filtering_with_join",
                 "execution_result": {
                     "status": "error",
                     "error_message": "Column 'Total_Funding' doesn't exist in table 'frpm'",
                     "error_type": "column_not_found"
-                },
+                }
+            },
+            evaluation={
                 "answers_intent": "no",
                 "result_quality": "poor",
                 "confidence_score": 0.1,
@@ -161,9 +161,7 @@ class TestFailurePatternAgentWithLLM:
                 GROUP BY s.school_id, s.school_name
                 """.strip(),
                 "explanation": "Use MIN with AVG to find school with lowest average score",
-                "query_type": "aggregation_with_minimum"
-            },
-            evaluation={
+                "query_type": "aggregation_with_minimum",
                 "execution_result": {
                     "status": "success",
                     "row_count": 1,
@@ -171,7 +169,9 @@ class TestFailurePatternAgentWithLLM:
                     "data": [
                         ["Jefferson Middle School", 87.8]
                     ]
-                },
+                }
+            },
+            evaluation={
                 "answers_intent": "no",
                 "result_quality": "poor",
                 "confidence_score": 0.2,

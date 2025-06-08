@@ -63,8 +63,8 @@ You receive:
 - ✅ `A &amp; B` ❌ `A & B`
 
 **Examples:**
-- ✅ <description>Filter where county = `Contra Costa` AND score &lt;= 250</description>
-- ✅ <purpose>Table `schools` for filtering</purpose>
+- ✅ <description>Filter where county = 'Contra Costa' AND score &lt;= 250</description>
+- ✅ <purpose>Table schools for filtering</purpose>
 
 # OUTPUT FORMAT
 Generate DO rules classified by agent type - each agent gets the most relevant information:

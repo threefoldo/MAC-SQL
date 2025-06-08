@@ -131,8 +131,8 @@ If this is a retry with issues:
 - ✅ `A &amp; B` ❌ `A & B`
 
 **Examples:**
-- ✅ <description>Filter where county = `Contra Costa` AND score &lt;= 250</description>
-- ✅ <purpose>Table `schools` for filtering</purpose>
+- ✅ <description>Filter where county = 'Contra Costa' AND score &lt;= 250</description>
+- ✅ <purpose>Table schools for filtering</purpose>
 
 ## Output Format
 

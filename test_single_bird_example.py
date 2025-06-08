@@ -22,7 +22,7 @@ load_dotenv()
 
 # Add the project root to Python path
 project_root = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(os.path.join(project_root, "workflow_v2", "src"))
+sys.path.append(os.path.join(project_root, "workflow_v3", "src"))
 
 from text_to_sql_tree_orchestrator import TextToSQLTreeOrchestrator
 

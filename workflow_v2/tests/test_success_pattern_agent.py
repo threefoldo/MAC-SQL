@@ -82,9 +82,7 @@ class TestSuccessPatternAgentWithLLM:
                 LIMIT 3
                 """.strip(),
                 "explanation": "Join schools with test scores, calculate average of math and reading scores per school, order by highest average, limit to top 3",
-                "query_type": "aggregation_with_ranking"
-            },
-            evaluation={
+                "query_type": "aggregation_with_ranking",
                 "execution_result": {
                     "status": "success",
                     "row_count": 3,
@@ -94,7 +92,9 @@ class TestSuccessPatternAgentWithLLM:
                         ["Washington Elementary", 89.3],
                         ["Jefferson Middle School", 87.8]
                     ]
-                },
+                }
+            },
+            evaluation={
                 "answers_intent": "yes",
                 "result_quality": "excellent",
                 "confidence_score": 0.95,

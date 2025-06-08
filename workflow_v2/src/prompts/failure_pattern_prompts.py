@@ -64,8 +64,8 @@ You receive:
 - ✅ `A &amp; B` ❌ `A & B`
 
 **Examples:**
-- ✅ <description>Filter where county = `Contra Costa` AND score &lt;= 250</description>
-- ✅ <purpose>Table `schools` for filtering</purpose>
+- ✅ <description>Filter where county = 'Contra Costa' AND score &lt;= 250</description>
+- ✅ <purpose>Table schools for filtering</purpose>
 
 # OUTPUT FORMAT
 Generate DON'T rules classified by the agent responsible for the mistake:
